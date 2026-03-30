@@ -13,5 +13,4 @@ import countryData from './assets/country_data.json';
 
 export const COUNTRY_ISO_MAP: Record<string, CountryData> = countryData;
 
-export const VERSION = "1.017";
-export const VERSION_NAME = "Maliyet Ayarları Paneli";
+export const VERSION = "1.003";

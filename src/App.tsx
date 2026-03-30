@@ -4,24 +4,33 @@
  */
 
 import React, { useState, useEffect, useCallback } from 'react';
-import { Shield, AlertTriangle, Coins, Crosshair, Users, Activity, ChevronRight, RefreshCw, Map as MapIcon, Eye, Swords, User, Globe as GlobeIcon, BookOpen, ArrowLeft, Home, Zap, Wheat, Handshake, Play, Pause, Clock, Layers, Settings, ListOrdered } from 'lucide-react';
+import { Shield, AlertTriangle, Coins, Crosshair, Users, Activity, ChevronRight, RefreshCw, Map as MapIcon, Eye, Swords, User, Globe as GlobeIcon, BookOpen, ArrowLeft, Home, Zap, Wheat, Handshake, Play, Pause, Clock, Layers, Settings, ListOrdered, Save, Info } from 'lucide-react';
 import * as topojson from 'topojson-client';
-import { GameState, Threat, ThreatType, Country, Unit, CountryState } from './types';
-import { INITIAL_RESOURCES, THREAT_TYPES } from './constants';
+import { Radar, RadarChart, PolarGrid, PolarAngleAxis, PolarRadiusAxis, ResponsiveContainer } from 'recharts';
+import { GameState, Threat, ThreatType, Country, Unit, CountryState, UserProfile, SaveGame, CountryMetadata, CountryData } from './types';
+import { DataManager } from './services/dataManager';
+import type { MapMode, GamePhase } from './types';
+import { INITIAL_RESOURCES, THREAT_TYPES, COUNTRY_ISO_MAP, VERSION } from './constants';
 import Globe from './Globe';
+import EventLogSidebar from './components/EventLogSidebar';
+import MainGameArea from './components/MainGameArea';
+import ActionSidebar from './components/ActionSidebar';
+import ActionButton from './components/ActionButton';
 
-type AppState = 'menu' | 'gdd' | 'settings' | 'select_country' | 'playing';
+type AppState = 'menu' | 'gdd' | 'settings' | 'select_country' | 'playing' | 'tutorial' | 'saves' | 'profile';
 
-const FLAG_MAP: Record<string, string> = {
-  "Turkey": "🇹🇷", "United States of America": "🇺🇸", "Russia": "🇷🇺", "China": "🇨🇳",
-  "Germany": "🇩🇪", "France": "🇫🇷", "United Kingdom": "🇬🇧", "Japan": "🇯🇵",
-  "India": "🇮🇳", "Brazil": "🇧🇷", "Italy": "🇮🇹", "Canada": "🇨🇦",
-  "South Korea": "🇰🇷", "Australia": "🇦🇺", "Spain": "🇪🇸", "Mexico": "🇲🇽",
-  "Indonesia": "🇮🇩", "Saudi Arabia": "🇸🇦", "Iran": "🇮🇷", "Israel": "🇮🇱",
-  "Ukraine": "🇺🇦", "Greece": "🇬🇷", "Egypt": "🇪🇬", "South Africa": "🇿🇦",
-  "Syria": "🇸🇾", "Iraq": "🇮🇶", "Bulgaria": "🇧🇬", "Georgia": "🇬🇪", "Armenia": "🇦🇲"
+const getFlag = (name: string, countryMetadata: CountryMetadata) => {
+  const countryEntry = Object.entries(countryMetadata).find(
+    ([eng, data]) => eng === name || data.tr === name
+  );
+  
+  if (countryEntry) {
+    const data = countryEntry[1];
+    const src = data.flagUrl || `https://flagcdn.com/w40/${data.code}.png`;
+    return <img src={src} alt={name} className="inline-block w-6 h-4 mr-2" />;
+  }
+  return <span className="mr-2">🏳️</span>;
 };
-const getFlag = (name: string) => FLAG_MAP[name] || "🏳️";
 
 const GOVERNMENT_TYPES = ['Demokrasi', 'Cumhuriyet', 'Monarşi', 'Diktatörlük', 'Komünizm'];
 const LEADERS = ['Ahmet Yılmaz', 'John Doe', 'Vladimir Ivanov', 'Li Wei', 'Hans Schmidt', 'Jean Dupont', 'James Smith', 'Kenji Sato', 'Raj Patel', 'Carlos Silva'];
@@ -31,68 +40,301 @@ export default function App() {
   const [isPaused, setIsPaused] = useState(false);
   const [playerCountry, setPlayerCountry] = useState<Country | null>(null);
   const [countriesData, setCountriesData] = useState<any[]>([]);
+  const [selectedCountry, setSelectedCountry] = useState<Country | null>(null);
+  const [userProfile, setUserProfile] = useState<UserProfile | null>(null);
+  const [saves, setSaves] = useState<SaveGame[]>([]);
+  const [autoPlay, setAutoPlay] = useState(false);
+  const [gameSpeed, setGameSpeed] = useState(2000);
+  const [showThreats, setShowThreats] = useState(true);
+  const [showUnits, setShowUnits] = useState(true);
+  const [sidebarTab, setSidebarTab] = useState<'region' | 'diplomacy'>('region');
+  const [actionsSubTab, setActionsSubTab] = useState<'main' | 'diplomacy' | 'covert'>('main');
+  const [difficulty, setDifficulty] = useState<'easy' | 'medium' | 'hard'>('medium');
+  const [soundEnabled, setSoundEnabled] = useState(true);
+  const [musicEnabled, setMusicEnabled] = useState(true);
+  const [language, setLanguage] = useState<'tr' | 'en'>('tr');
+  const [selectedCountryId, setSelectedCountryId] = useState<string>('');
+  const [isLoading, setIsLoading] = useState(true);
+  const [countryMetadata, setCountryMetadata] = useState<CountryMetadata>(() => DataManager.getInitializedData());
+  const [initialResources, setInitialResources] = useState(() => {
+    const saved = localStorage.getItem('initialResources');
+    return saved ? JSON.parse(saved) : { ...INITIAL_RESOURCES };
+  });
   const [gameState, setGameState] = useState<GameState>({
     turn: 1,
     maxTurns: 20,
-    resources: { ...INITIAL_RESOURCES },
+    resources: { ...initialResources },
     threats: [],
     units: [],
     logs: ['Oyun başladı. Dünyayı yönetme sırası sizde.'],
     mapMode: 'political',
     gameOver: false,
     victory: false,
-    worldState: {},
+    worldState: {} as Record<string, CountryState>,
     gamePhase: 'main_menu',
   });
 
-  const [selectedCountry, setSelectedCountry] = useState<Country | null>(null);
-  const [autoPlay, setAutoPlay] = useState(false);
-  const [gameSpeed, setGameSpeed] = useState(2000);
-  const [showThreats, setShowThreats] = useState(true);
-  const [showUnits, setShowUnits] = useState(true);
-  const [sidebarTab, setSidebarTab] = useState<'region' | 'diplomacy'>('region');
+  const t = (key: string, tr: string, en: string) => language === 'tr' ? tr : en;
+
+  const getCountryState = (id: string, name: string) => {
+    if (isLoading) return undefined;
+    
+    console.log('getCountryState id:', id, 'name:', name, 'countryMetadata:', countryMetadata);
+    // Find entry in countryMetadata
+    const entry = (Object.values(countryMetadata) as CountryData[]).find(
+      (data) => data.en === id || data.tr === id || data.code === id || data.en === name || data.tr === name
+    );
+    
+    if (entry) {
+        // Map CountryMetadata to CountryState structure
+        return {
+            id: entry.en, // Use English name as ID
+            name: entry.tr,
+            ownerId: entry.en,
+            color: gameState.worldState[entry.en]?.color || '#34d399', // Keep color if it exists
+            technology: gameState.worldState[entry.en]?.technology ?? entry.technology,
+            agriculture: gameState.worldState[entry.en]?.agriculture ?? entry.agriculture,
+            army: gameState.worldState[entry.en]?.army ?? entry.army,
+            economy: gameState.worldState[entry.en]?.economy ?? entry.economy,
+            allies: gameState.worldState[entry.en]?.allies || [],
+            enemies: gameState.worldState[entry.en]?.enemies || [],
+            leader: entry.leader,
+            governmentType: entry.governmentType,
+            spies: gameState.worldState[entry.en]?.spies || 0,
+            intelLevel: gameState.worldState[entry.en]?.intelLevel || 0,
+            sanctions: gameState.worldState[entry.en]?.sanctions || false,
+            isRebellion: gameState.worldState[entry.en]?.isRebellion || false,
+            capital: entry.capital,
+            language: entry.language,
+            population: entry.population,
+            gdp: entry.gdp
+        } as CountryState;
+    }
+    
+    return undefined;
+  };
+
+  const countryState = selectedCountry ? getCountryState(selectedCountry.id, selectedCountry.name) : null;
+  console.log('App.tsx countryState:', countryState, 'selectedCountry:', selectedCountry);
+  const isOwnedByPlayer = countryState?.ownerId === playerCountry?.id;
+  const ownerState = countryState ? getCountryState(countryState.ownerId || '', '') : null;
+  const isAlly = (countryState?.allies || []).includes(playerCountry?.id || '');
+  const isEnemy = (countryState?.enemies || []).includes(playerCountry?.id || '');
+
+  const saveGame = (type: 'autosave' | 'manual' = 'manual') => {
+    const newSave: SaveGame = {
+      id: type === 'autosave' ? 0 : Date.now(),
+      timestamp: new Date().toLocaleString(),
+      gameState: gameState,
+      playerCountryId: playerCountry?.id || ''
+    };
+    
+    if (type === 'autosave') {
+      localStorage.setItem('autosave', JSON.stringify(newSave));
+    } else {
+      const updatedSaves = [...saves.filter(s => s.id !== 0), newSave];
+      setSaves(updatedSaves);
+      localStorage.setItem('saves', JSON.stringify(updatedSaves));
+    }
+  };
+
+  const PauseMenu = () => (
+    <div className="fixed inset-0 bg-slate-900/80 backdrop-blur-sm flex items-center justify-center z-50">
+      <div className="bg-slate-800 p-8 rounded-2xl border border-slate-700 space-y-4 w-80">
+        <h2 className="text-2xl font-bold text-white text-center mb-6">Oyun Duraklatıldı</h2>
+        <button onClick={() => setIsPaused(false)} className="w-full bg-indigo-600 hover:bg-indigo-500 text-white py-3 rounded-full font-bold">Devam Et</button>
+        <button onClick={() => { saveGame('manual'); setAppState('saves'); setIsPaused(false); }} className="w-full bg-slate-700 hover:bg-slate-600 text-white py-3 rounded-full font-bold">Kayıtlar</button>
+        <button onClick={() => { saveGame('manual'); setAppState('menu'); setIsPaused(false); }} className="w-full bg-slate-700 hover:bg-slate-600 text-white py-3 rounded-full font-bold">Ana Menüye Dön</button>
+        <button onClick={() => { setAppState('menu'); setIsPaused(false); }} className="w-full bg-red-600 hover:bg-red-500 text-white py-3 rounded-full font-bold">Yeni Oyuna Başla</button>
+      </div>
+    </div>
+  );
+
+  const loadGame = (save: SaveGame) => {
+    setGameState(save.gameState);
+    setPlayerCountry({ id: save.playerCountryId, name: gameState.worldState[save.playerCountryId]?.name || '' });
+    setAppState('playing');
+  };
 
   const [showRankings, setShowRankings] = useState(false);
   const [rankingsTab, setRankingsTab] = useState<'army' | 'economy' | 'agriculture' | 'technology'>('economy');
+  const [settingsTab, setSettingsTab] = useState<'general' | 'database' | 'costs'>('general');
+  const [searchQuery, setSearchQuery] = useState('');
+  const [actionCosts, setActionCosts] = useState(() => {
+    const saved = localStorage.getItem('actionCosts');
+    return saved ? JSON.parse(saved) : {
+      deployArmy: 20,
+      deployAgent: 15,
+      ekonomi: 30,
+      peace: 500,
+      attack: 200,
+      spy: 50,
+      intel: 20,
+      sanction: 100,
+      rebel: 200,
+      assassinate: 500,
+      rebelSuppress: 200,
+      crisisSolve: 100,
+      allyEconomy: 100,
+      allyMilitary: 150,
+      allyTech: 300,
+      counterTerrorism: 150,
+      counterRebellion: 200,
+      counterAssassination: 50,
+      counterWar: 300,
+    };
+  });
+
+  const saveActionCosts = () => {
+    localStorage.setItem('actionCosts', JSON.stringify(actionCosts));
+    alert('Maliyetler kaydedildi!');
+  };
+
+  const saveCountryData = () => {
+    DataManager.saveData(countryMetadata);
+    alert('Veriler kaydedildi!');
+  };
+
+  const saveInitialResources = () => {
+    localStorage.setItem('initialResources', JSON.stringify(initialResources));
+    alert('Başlangıç ayarları kaydedildi!');
+  };
 
   // Load World Map Data
   useEffect(() => {
+    // console.log("useEffect running");
+    const savedProfile = localStorage.getItem('userProfile');
+    if (savedProfile) setUserProfile(JSON.parse(savedProfile));
+    
+    const savedGames = localStorage.getItem('saves');
+    if (savedGames) setSaves(JSON.parse(savedGames));
+
     fetch('https://unpkg.com/world-atlas@2.0.2/countries-110m.json')
-      .then(res => res.json())
+      .then(res => {
+        // console.log("Map data response:", res);
+        return res.json();
+      })
       .then(topology => {
         const geojson = topojson.feature(topology, topology.objects.countries) as any;
         // Filter out Antarctica for better gameplay focus
         const filteredFeatures = geojson.features.filter((f: any) => f.properties.name !== 'Antarctica');
+        console.log("Filtered features count:", filteredFeatures.length);
+        
+        // Log missing countries
+        const dbCountries = Object.keys(COUNTRY_ISO_MAP);
+        const featureNames = filteredFeatures.map((f: any) => f.properties.name);
+        const missing = filteredFeatures.filter((f: any) => !dbCountries.includes(f.properties.name));
+        // console.log("Missing countries:", missing.map((f: any) => f.properties.name));
+        console.log("Filtered features count:", filteredFeatures.length);
+        
+        // Validate metadata
+        // missing.forEach((f: any) => console.log("Country not found in metadata:", f.properties.name));
+        
+        // Map names to Turkish and merge geometry
+        const updatedMetadata = { ...countryMetadata };
+        filteredFeatures.forEach((f: any, i: number) => {
+          f.properties.englishName = f.properties.name;
+          // Try to find by English name first, then try to find by matching 'en' field in metadata
+          let countryData = updatedMetadata[f.properties.name];
+          
+          if (!countryData) {
+            if (f.properties?.name) {
+              const normalizedName = f.properties.name.toLowerCase().replace(/\s+/g, '');
+              countryData = Object.values(updatedMetadata).find((c: CountryData) => 
+                (c.en?.toLowerCase().replace(/\s+/g, '') === normalizedName) ||
+                (c.tr?.toLowerCase().replace(/\s+/g, '') === normalizedName)
+              );
+            }
+          }
+          
+          if (countryData) {
+            f.properties.name = countryData.tr;
+            // Merge geometry
+            countryData.geometry = f.geometry;
+            // Ensure the key in updatedMetadata is the English name for consistency
+            if (updatedMetadata[f.properties.name] !== countryData) {
+                delete updatedMetadata[f.properties.name];
+                updatedMetadata[countryData.en] = countryData;
+            }
+          } else {
+            // console.log("Country not found in metadata:", f.properties.name);
+            f.properties.name = f.properties.name + " (Eksik)";
+          }
+        });
+        
+        // console.log("Updating countryMetadata:", updatedMetadata);
+        setCountryMetadata(updatedMetadata);
+        localStorage.setItem('countryMetadata', JSON.stringify(updatedMetadata));
         setCountriesData(filteredFeatures);
-
+        // console.log("Countries data set and metadata merged");
+        
         // Initialize world state
         const initialWorldState: Record<string, CountryState> = {};
         const colors = ['#34d399', '#14b8a6', '#eab308', '#16a34a', '#3b82f6', '#f97316', '#ef4444', '#8b5cf6', '#ec4899'];
+        
         filteredFeatures.forEach((f: any, i: number) => {
-          const id = f.id || f.properties.name;
-          initialWorldState[id] = {
-            id,
-            name: f.properties.name,
-            ownerId: id,
+          const id = f.id || f.properties.englishName;
+          const englishName = f.properties.englishName || f.id;
+          const turkishName = f.properties.name;
+          
+          let countryData = updatedMetadata[englishName];
+          if (!countryData) {
+            countryData = Object.values(updatedMetadata).find((c: CountryData) => c.en?.toLowerCase() === englishName?.toLowerCase());
+          }
+          
+          const details = countryData ? { 
+            leader: countryData.leader || 'Bilinmiyor', 
+            capital: countryData.capital || 'Bilinmiyor', 
+            language: countryData.language || 'Yerel Dil',
+            population: countryData.population || 0,
+            gdp: countryData.gdp || 0
+          } : { 
+            leader: 'Bilinmiyor', 
+            capital: 'Bilinmiyor', 
+            language: 'Yerel Dil',
+            population: 0,
+            gdp: 0
+          };
+          
+          initialWorldState[englishName] = {
+            id: englishName,
+            name: turkishName,
+            ownerId: englishName,
             color: colors[i % colors.length],
-            technology: Math.floor(Math.random() * 3) + 1,
-            agriculture: Math.floor(Math.random() * 5) + 1,
-            army: Math.floor(Math.random() * 5000) + 1000,
-            economy: Math.floor(Math.random() * 100) + 50,
+            technology: countryData?.technology || 1,
+            agriculture: countryData?.agriculture || 1,
+            army: countryData?.army || 60,
+            economy: countryData?.economy || 1,
             allies: [],
             enemies: [],
-            leader: LEADERS[Math.floor(Math.random() * LEADERS.length)],
-            governmentType: GOVERNMENT_TYPES[Math.floor(Math.random() * GOVERNMENT_TYPES.length)],
+            leader: details.leader,
+            governmentType: countryData?.governmentType || 'Cumhuriyet',
             spies: 0,
-            intelLevel: Math.floor(Math.random() * 20),
+            intelLevel: 0,
             sanctions: false,
-            capital: f.properties.name + ' City',
-            language: 'Yerel Dil',
+            isRebellion: false,
+            capital: details.capital,
+            language: details.language,
+            population: details.population,
+            gdp: details.gdp
           };
         });
-        setGameState(prev => ({ ...prev, worldState: initialWorldState }));
+        
+        setGameState(prev => {
+          // console.log("Setting worldState:", initialWorldState);
+          return { ...prev, worldState: initialWorldState };
+        });
+        setIsLoading(false);
+      })
+      .catch(err => {
+        console.error("Error fetching map data:", err);
+        setIsLoading(false);
       });
   }, []);
+
+  useEffect(() => {
+    // console.log("gameState changed:", gameState);
+  }, [gameState]);
 
   // Handle ESC key for pause menu
   useEffect(() => {
@@ -147,7 +389,7 @@ export default function App() {
 
       // 1. Economy & Growth
       let totalAg = 0;
-      Object.values(newWorldState).forEach(c => {
+      Object.values(newWorldState).forEach((c: any) => {
         if (c.ownerId === playerCountry?.id) {
           totalAg += c.agriculture;
         }
@@ -160,8 +402,8 @@ export default function App() {
       newBudget += 20; // Base income
 
       // 2. Wars & Conquest
-      Object.values(newWorldState).forEach(c => {
-        if (c.enemies.length > 0) {
+      Object.values(newWorldState).forEach((c: any) => {
+        if (c.enemies && c.enemies.length > 0) {
           const enemyId = c.enemies[0]; // Fight first enemy
           const enemy = newWorldState[enemyId];
           if (enemy) {
@@ -258,7 +500,7 @@ export default function App() {
         newLogs.unshift('Oyun Bitti! Ülke istikrarını kaybetti veya iflas etti.');
       }
 
-      return {
+      const newState = {
         ...prev,
         turn: prev.turn + 1,
         resources: {
@@ -273,6 +515,17 @@ export default function App() {
         victory: false,
         worldState: newWorldState
       };
+
+      // Autosave
+      const newSave: SaveGame = {
+        id: 0,
+        timestamp: new Date().toLocaleString(),
+        gameState: newState,
+        playerCountryId: playerCountry?.id || ''
+      };
+      localStorage.setItem('autosave', JSON.stringify(newSave));
+
+      return newState;
     });
   }, [countriesData, playerCountry]);
 
@@ -293,8 +546,8 @@ export default function App() {
 
       switch (actionType) {
         case 'deploy_army':
-          if (budget >= 20 && military >= 15 && !regionUnits.some(u => u.type === 'Army')) {
-            budget -= 20;
+          if (budget >= actionCosts.deployArmy && military >= 15 && !regionUnits.some(u => u.type === 'Army')) {
+            budget -= actionCosts.deployArmy;
             military -= 15;
             updatedUnits.push({ id: Math.random().toString(), type: 'Army', countryId: selectedCountry.id });
             newLogs.unshift(`${selectedCountry.name} bölgesine Ordu konuşlandırıldı.`);
@@ -302,8 +555,8 @@ export default function App() {
           }
           break;
         case 'deploy_agent':
-          if (budget >= 15 && intelligence >= 10 && !regionUnits.some(u => u.type === 'Agent')) {
-            budget -= 15;
+          if (budget >= actionCosts.deployAgent && intelligence >= 10 && !regionUnits.some(u => u.type === 'Agent')) {
+            budget -= actionCosts.deployAgent;
             intelligence -= 10;
             updatedUnits.push({ id: Math.random().toString(), type: 'Agent', countryId: selectedCountry.id });
             newLogs.unshift(`${selectedCountry.name} bölgesine Ajan yerleştirildi.`);
@@ -311,8 +564,8 @@ export default function App() {
           }
           break;
         case 'ekonomi':
-          if (budget >= 30) {
-            budget -= 30;
+          if (budget >= actionCosts.ekonomi) {
+            budget -= actionCosts.ekonomi;
             stability += 10;
             const targetThreat = regionThreats.find(t => t.type === 'Ekonomi');
             if (targetThreat) {
@@ -351,7 +604,7 @@ export default function App() {
   const restartGame = () => {
     setGameState({
       turn: 1,
-      resources: { ...INITIAL_RESOURCES },
+      resources: { ...initialResources },
       threats: [],
       units: [],
       logs: ['Oyun yeniden başladı. Yeni bir ülke seçin.'],
@@ -365,46 +618,53 @@ export default function App() {
   };
 
   const getCountryFill = (countryId: string) => {
-    const safeId = countryId || 'unknown';
+    // Find the English ID if the provided ID is a Turkish name
+    let safeId = countryId;
+    const metadataEntry = Object.entries(countryMetadata).find(([_, data]) => (data as CountryData).tr === countryId || (data as CountryData).en === countryId || (data as CountryData).code === countryId);
+    if (metadataEntry) {
+      safeId = metadataEntry[0];
+    }
+    
     const countryState = gameState.worldState[safeId];
     
     if (gameState.mapMode === 'political') {
-      if (!countryState) return '#1f2937';
-      // If owned by player, use player color
-      if (countryState.ownerId === playerCountry?.id) return '#4f46e5'; // indigo-600
-      
-      // Otherwise use the owner's original color
+      const colors = ['#34d399', '#14b8a6', '#eab308', '#16a34a', '#3b82f6', '#f97316', '#ef4444', '#8b5cf6', '#ec4899', '#f472b6', '#a78bfa', '#fb923c', '#22c55e', '#06b6d4', '#6366f1'];
+      const colorIndex = safeId.split('').reduce((acc, char) => acc + char.charCodeAt(0), 0) % colors.length;
+      const uniqueColor = colors[colorIndex];
+      if (!countryState) return uniqueColor;
+      if (countryState.ownerId === playerCountry?.id) return '#3b82f6'; // blue-500
       const owner = gameState.worldState[countryState.ownerId];
-      return owner ? owner.color : countryState.color;
+      return owner ? owner.color : (countryState.color || uniqueColor);
     }
     
     if (gameState.mapMode === 'threat') {
       const threats = gameState.threats.filter(t => t.countryId === safeId);
-      if (threats.length === 0) return '#1f2937'; // gray-800
+      if (threats.length === 0) return '#1e293b';
       const totalSeverity = threats.reduce((sum, t) => sum + t.severity, 0);
-      if (totalSeverity > 5) return '#991b1b'; // red-800
-      if (totalSeverity > 2) return '#b45309'; // amber-700
-      return '#854d0e'; // yellow-800
+      if (totalSeverity > 5) return '#ef4444'; // red-500
+      if (totalSeverity > 2) return '#f97316'; // orange-500
+      return '#eab308'; // yellow-500
     }
 
     if (gameState.mapMode === 'military') {
-      const units = gameState.units.filter(u => u.countryId === safeId);
-      if (units.length === 0) return '#1f2937';
-      if (units.some(u => u.type === 'Army')) return '#1e3a8a'; // blue-900
-      return '#312e81'; // indigo-900
+      if (!countryState) return '#1e293b';
+      const army = countryState.army || 0;
+      if (army < 20) return '#334155'; // slate-700
+      if (army < 50) return '#3b82f6'; // blue-500
+      return '#1e40af'; // blue-800
     }
 
     if (gameState.mapMode === 'wars') {
-      const isAtWar = countryState?.enemies?.length > 0 || gameState.threats.some(t => t.countryId === safeId && t.type === 'Savaş');
-      return isAtWar ? '#ef4444' : '#1f2937'; // red-500 or gray-800
+      if (!countryState) return '#1e293b';
+      return countryState.enemies && countryState.enemies.length > 0 ? '#ef4444' : '#1e293b';
     }
 
     if (gameState.mapMode === 'events') {
-      const hasEvents = gameState.threats.some(t => t.countryId === safeId);
-      return hasEvents ? '#eab308' : '#1f2937'; // yellow-500 or gray-800
+      if (!countryState) return '#1e293b';
+      return countryState.sanctions ? '#eab308' : '#1e293b';
     }
 
-    return '#1f2937';
+    return countryState?.color || '#374151';
   };
 
   const upgradeCountry = (type: 'technology' | 'agriculture' | 'army') => {
@@ -421,7 +681,7 @@ export default function App() {
 
       if (type === 'technology') country.technology += 1;
       if (type === 'agriculture') country.agriculture += 1;
-      if (type === 'army') country.army += 1000;
+      if (type === 'army') country.army += 1;
 
       newWorldState[selectedCountry.id] = country;
 
@@ -434,13 +694,60 @@ export default function App() {
     });
   };
 
-  const handleDiplomacy = (action: 'alliance' | 'war', targetId: string) => {
+  const handleDiplomacy = (action: 'alliance' | 'war' | 'peace', targetId: string | number) => {
     if (!targetId || !playerCountry) return;
+    
+    // Helper to find country key in worldState
+    const findCountryKey = (id: string | number) => {
+      const searchId = String(id).toLowerCase().trim();
+      const keys = Object.keys(gameState.worldState);
+      
+      // 1. Direct match (key or name)
+      let foundKey = keys.find(key => 
+        key.toLowerCase().trim() === searchId || 
+        (gameState.worldState[key].name?.toLowerCase().trim() === searchId)
+      );
+
+      // 2. Metadata match (using numericId, tr, en, code)
+      if (!foundKey) {
+        const metaKey = Object.keys(countryMetadata).find(k => {
+          const m = countryMetadata[k];
+          return String(m.numericId) === searchId || 
+                 m.tr?.toLowerCase().trim() === searchId || 
+                 m.en?.toLowerCase().trim() === searchId || 
+                 m.code?.toLowerCase().trim() === searchId;
+        });
+        
+        if (metaKey) {
+          // If found in metadata, try to find the corresponding key in worldState
+          foundKey = keys.find(k => k === metaKey || gameState.worldState[k].name === countryMetadata[metaKey].tr);
+        }
+      }
+
+      // 3. Special case for Turkey
+      if (!foundKey && (searchId === 'turkey' || searchId === 'türkiye')) {
+        foundKey = keys.find(key => 
+          gameState.worldState[key].name?.toLowerCase().includes('türkiye') ||
+          gameState.worldState[key].name?.toLowerCase().includes('turkey')
+        );
+      }
+      
+      return foundKey;
+    };
+
+    const safeTargetId = findCountryKey(targetId);
+    const safePlayerId = findCountryKey(playerCountry.id);
+    
+    if (!safeTargetId || !safePlayerId) {
+      console.warn("Diplomacy failed: Target or Player not found", { targetId, playerId: playerCountry.id, safeTargetId, safePlayerId });
+      return;
+    }
     
     setGameState(prev => {
       const newWorldState = { ...prev.worldState };
-      const target = { ...newWorldState[targetId] };
-      const player = { ...newWorldState[playerCountry.id] };
+      const target = { ...newWorldState[safeTargetId], allies: newWorldState[safeTargetId].allies || [], enemies: newWorldState[safeTargetId].enemies || [] };
+      const player = { ...newWorldState[safePlayerId], allies: newWorldState[safePlayerId].allies || [], enemies: newWorldState[safePlayerId].enemies || [] };
+      let newBudget = prev.resources.budget;
 
       if (action === 'alliance') {
         if (!target.allies.includes(player.id)) {
@@ -458,9 +765,7 @@ export default function App() {
           worldState: newWorldState,
           logs: [`[Diplomasi] ${target.name} ile ittifak kuruldu!`, ...prev.logs]
         };
-      }
-
-      if (action === 'war') {
+      } else if (action === 'war') {
         if (!target.enemies.includes(player.id)) {
           target.enemies.push(player.id);
           player.enemies.push(target.id);
@@ -476,12 +781,48 @@ export default function App() {
           worldState: newWorldState,
           logs: [`[SAVAŞ] ${target.name} ülkesine savaş ilan edildi!`, ...prev.logs]
         };
+      } else if (action === 'peace') {
+        if (newBudget >= actionCosts.peace) {
+          newBudget -= actionCosts.peace;
+          target.enemies = target.enemies.filter(id => id !== player.id);
+          player.enemies = player.enemies.filter(id => id !== target.id);
+          newWorldState[target.id] = target;
+          newWorldState[player.id] = player;
+          return {
+            ...prev,
+            resources: { ...prev.resources, budget: newBudget },
+            worldState: newWorldState,
+            logs: [`[Diplomasi] ${target.name} ile barış yapıldı!`, ...prev.logs]
+          };
+        }
+      } else if (action === 'break_alliance') {
+        target.allies = target.allies.filter(id => id !== player.id);
+        player.allies = player.allies.filter(id => id !== target.id);
+        newWorldState[target.id] = target;
+        newWorldState[player.id] = player;
+        return {
+          ...prev,
+          worldState: newWorldState,
+          logs: [`[Diplomasi] ${target.name} ile ittifak bozuldu!`, ...prev.logs]
+        };
+      } else if (action === 'attack') {
+        if (newBudget >= actionCosts.attack) {
+          newBudget -= actionCosts.attack;
+          target.army = Math.max(0, target.army - 500);
+          newWorldState[target.id] = target;
+          return {
+            ...prev,
+            resources: { ...prev.resources, budget: newBudget },
+            worldState: newWorldState,
+            logs: [`[SAVAŞ] ${target.name} ülkesine saldırı düzenlendi!`, ...prev.logs]
+          };
+        }
       }
       return prev;
     });
   };
 
-  const handleCovertAction = (action: 'spy' | 'intel' | 'sanction' | 'rebel' | 'assassinate', targetId: string) => {
+  const handleCovertAction = (action: 'spy' | 'intel' | 'sanction' | 'rebel' | 'assassinate' | 'rebel_suppress' | 'crisis_solve', targetId: string) => {
     if (!playerCountry) return;
     
     setGameState(prev => {
@@ -492,30 +833,30 @@ export default function App() {
 
       switch (action) {
         case 'spy':
-          if (newBudget >= 50) {
-            newBudget -= 50;
+          if (newBudget >= actionCosts.spy) {
+            newBudget -= actionCosts.spy;
             target.spies += 1;
             logMsg = `[İstihbarat] ${target.name} ülkesine ajan yerleştirildi.`;
           }
           break;
         case 'intel':
-          if (newBudget >= 20 && target.spies > 0) {
-            newBudget -= 20;
+          if (newBudget >= actionCosts.intel && target.spies > 0) {
+            newBudget -= actionCosts.intel;
             target.intelLevel = Math.min(100, target.intelLevel + 20);
             logMsg = `[İstihbarat] ${target.name} hakkında bilgi toplandı. İstihbarat seviyesi: %${target.intelLevel}`;
           }
           break;
         case 'sanction':
-          if (newBudget >= 100) {
-            newBudget -= 100;
+          if (newBudget >= actionCosts.sanction) {
+            newBudget -= actionCosts.sanction;
             target.sanctions = true;
             target.agriculture = Math.max(1, target.agriculture - 2);
             logMsg = `[Ekonomi] ${target.name} ülkesine ekonomik yaptırım uygulandı.`;
           }
           break;
         case 'rebel':
-          if (newBudget >= 200 && target.spies > 0) {
-            newBudget -= 200;
+          if (newBudget >= actionCosts.rebel && target.spies > 0) {
+            newBudget -= actionCosts.rebel;
             logMsg = `[Gizli Operasyon] ${target.name} ülkesindeki muhalifler desteklendi. İç savaş riski arttı.`;
             const newThreat: Threat = {
               id: Math.random().toString(36).substring(7),
@@ -535,24 +876,44 @@ export default function App() {
           }
           break;
         case 'assassinate':
-          if (newBudget >= 500 && target.spies >= 2) {
-            newBudget -= 500;
+          if (newBudget >= actionCosts.assassinate && target.spies >= 2) {
+            newBudget -= actionCosts.assassinate;
             target.leader = LEADERS[Math.floor(Math.random() * LEADERS.length)];
             target.spies -= 1;
             logMsg = `[Kritik] ${target.name} liderine suikast düzenlendi! Yeni lider: ${target.leader}`;
-            const newThreat: Threat = {
-              id: Math.random().toString(36).substring(7),
-              type: 'İç Karışıklık',
-              severity: 8,
-              turnsLeft: 3,
-              countryId: targetId,
-            };
             newState[targetId] = target;
             return {
               ...prev,
               resources: { ...prev.resources, budget: newBudget },
               worldState: newState,
-              threats: [...prev.threats, newThreat],
+              logs: [logMsg, ...prev.logs]
+            };
+          }
+          break;
+        case 'rebel_suppress':
+          if (newBudget >= actionCosts.rebelSuppress) {
+            newBudget -= actionCosts.rebelSuppress;
+            target.isRebellion = false;
+            logMsg = `[İçişleri] ${target.name} ülkesindeki isyan bastırıldı.`;
+            newState[targetId] = target;
+            return {
+              ...prev,
+              resources: { ...prev.resources, budget: newBudget },
+              worldState: newState,
+              logs: [logMsg, ...prev.logs]
+            };
+          }
+          break;
+        case 'crisis_solve':
+          if (newBudget >= actionCosts.crisisSolve) {
+            newBudget -= actionCosts.crisisSolve;
+            target.sanctions = false;
+            logMsg = `[Ekonomi] ${target.name} ülkesindeki ekonomik kriz çözüldü.`;
+            newState[targetId] = target;
+            return {
+              ...prev,
+              resources: { ...prev.resources, budget: newBudget },
+              worldState: newState,
               logs: [logMsg, ...prev.logs]
             };
           }
@@ -583,22 +944,22 @@ export default function App() {
 
       switch (action) {
         case 'economy':
-          if (newBudget >= 100) {
-            newBudget -= 100;
+          if (newBudget >= actionCosts.allyEconomy) {
+            newBudget -= actionCosts.allyEconomy;
             target.agriculture += 1;
             logMsg = `[Destek] Müttefikimiz ${target.name}'e ekonomik paket gönderildi.`;
           }
           break;
         case 'military':
-          if (newBudget >= 150) {
-            newBudget -= 150;
+          if (newBudget >= actionCosts.allyMilitary) {
+            newBudget -= actionCosts.allyMilitary;
             target.army += 2000;
             logMsg = `[Destek] Müttefikimiz ${target.name}'e askeri teçhizat ve birlik gönderildi.`;
           }
           break;
         case 'tech':
-          if (newBudget >= 300) {
-            newBudget -= 300;
+          if (newBudget >= actionCosts.allyTech) {
+            newBudget -= actionCosts.allyTech;
             target.technology += 1;
             logMsg = `[Destek] Müttefikimiz ${target.name} ile teknoloji paylaşıldı.`;
           }
@@ -625,11 +986,11 @@ export default function App() {
       let reqSpies = 0;
       let logMsg = '';
       
-      if (type === 'Ekonomi') { cost = 100; logMsg = `${country.name} ülkesindeki Ekonomik Kriz yatırımlarımızla çözüldü.`; }
-      else if (type === 'Terörizm') { cost = 150; logMsg = `${country.name} ülkesindeki Terörizm askeri desteğimizle bastırıldı.`; }
-      else if (type === 'İç Karışıklık' || type === 'İç Savaş') { cost = 200; reqSpies = 1; logMsg = `${country.name} ülkesindeki isyan ajanlarımızca bastırıldı.`; }
-      else if (type === 'Suikast') { cost = 50; reqSpies = 1; logMsg = `${country.name} liderine yönelik suikast ajanlarımızca engellendi.`; }
-      else if (type === 'Savaş') { cost = 300; logMsg = `${country.name} ülkesindeki Savaş diplomatik müdahalemizle sonlandırıldı.`; }
+      if (type === 'Ekonomi') { cost = actionCosts.crisisSolve; logMsg = `${country.name} ülkesindeki Ekonomik Kriz yatırımlarımızla çözüldü.`; }
+      else if (type === 'Terörizm') { cost = actionCosts.counterTerrorism; logMsg = `${country.name} ülkesindeki Terörizm askeri desteğimizle bastırıldı.`; }
+      else if (type === 'İç Karışıklık' || type === 'İç Savaş') { cost = actionCosts.counterRebellion; reqSpies = 1; logMsg = `${country.name} ülkesindeki isyan ajanlarımızca bastırıldı.`; }
+      else if (type === 'Suikast') { cost = actionCosts.counterAssassination; reqSpies = 1; logMsg = `${country.name} liderine yönelik suikast ajanlarımızca engellendi.`; }
+      else if (type === 'Savaş') { cost = actionCosts.counterWar; logMsg = `${country.name} ülkesindeki Savaş diplomatik müdahalemizle sonlandırıldı.`; }
 
       if (prev.resources.budget < cost) return prev;
       if (reqSpies > 0 && (country.spies || 0) < reqSpies) return prev;
@@ -644,7 +1005,7 @@ export default function App() {
   };
 
   const globalRankings = React.useMemo(() => {
-    const countries = Object.values(gameState.worldState);
+    const countries = Object.values(gameState.worldState) as CountryState[];
     if (countries.length === 0) return { army: [], economy: [], agriculture: [], technology: [] };
     
     return {
@@ -663,40 +1024,197 @@ export default function App() {
 
   if (appState === 'menu') {
     return (
-      <div className="min-h-screen bg-slate-900 flex flex-col items-center justify-center font-sans text-white relative overflow-hidden">
-        {/* Background Globe effect */}
-        <div className="absolute inset-0 opacity-10 pointer-events-none flex items-center justify-center">
-          <GlobeIcon size={800} className="text-indigo-500 animate-[spin_60s_linear_infinite]" />
+      <div className="min-h-screen bg-[radial-gradient(ellipse_at_top_right,_var(--tw-gradient-stops))] from-slate-900 via-slate-950 to-black flex font-sans text-white relative overflow-hidden">
+        {/* Non-interactive Background Globe */}
+        <div className="absolute right-48 top-0 bottom-0 w-1/2 flex items-center justify-center pointer-events-none">
+          <div className="relative w-[750px] h-[750px]">
+            <Globe 
+              selectedCountryId={null} 
+              onSelectCountry={() => {}} 
+              getCountryFill={(id) => {
+                // Generate a vibrant color based on ID hash
+                const hash = id.split('').reduce((acc, char) => acc + char.charCodeAt(0), 0);
+                const colors = ['#3b82f6', '#ef4444', '#22c55e', '#eab308', '#a855f7', '#ec4899', '#06b6d4'];
+                return colors[hash % colors.length];
+              }}
+              getFlag={() => <></>}
+              countryMetadata={countryMetadata}
+              threats={[]}
+              units={[]}
+              worldState={gameState.worldState}
+              interactive={false}
+              showThreats={false}
+              showUnits={false}
+              mapMode={gameState.mapMode}
+            />
+          </div>
         </div>
         
-        <div className="z-10 text-center max-w-2xl px-6">
-          <h1 className="text-6xl font-black mb-6 tracking-tighter bg-gradient-to-r from-indigo-400 via-purple-400 to-pink-400 text-transparent bg-clip-text">
-            GLOBAL DEFENSE
+        {/* Left Side Menu */}
+        <div className="z-10 w-full max-w-md flex flex-col justify-center px-16 gap-6">
+          <h1 className="text-7xl font-black tracking-tighter bg-gradient-to-r from-cyan-400 via-indigo-500 to-purple-600 text-transparent bg-clip-text mb-12">
+            GLOBAL<br/>DEFENSE
+            <span className="text-2xl block text-white mt-2">v{VERSION}</span>
           </h1>
-          <p className="text-xl text-gray-300 mb-12 leading-relaxed">
-            Dünya krizde. Suikastler, iç karışıklıklar ve savaşlar sınırları aşıyor. 
-            Ülkeni seç, kaynaklarını yönet ve 20 tur boyunca küresel istikrarı sağla.
-          </p>
           
-          <div className="flex flex-col sm:flex-row gap-4 justify-center">
+          <div className="flex flex-col gap-3">
+            <button 
+              onClick={() => loadGame(saves[saves.length - 1])}
+              disabled={saves.length === 0}
+              className={`text-left px-8 py-4 rounded-lg font-bold text-2xl transition-all hover:pl-12 flex items-center gap-4 ${saves.length > 0 ? 'bg-indigo-900/50 hover:bg-indigo-800/50 text-white' : 'bg-slate-800 opacity-50 cursor-not-allowed text-slate-400'}`}
+            >
+              <Play size={28} /> Devam Et
+            </button>
             <button 
               onClick={() => setAppState('select_country')}
-              className="bg-indigo-600 hover:bg-indigo-500 text-white px-8 py-4 rounded-full font-bold text-xl transition-all transform hover:scale-105 shadow-[0_0_40px_rgba(79,70,229,0.4)] flex items-center justify-center gap-3"
+              className="text-left bg-indigo-600 hover:bg-indigo-500 text-white px-8 py-4 rounded-lg font-bold text-2xl transition-all hover:pl-12 flex items-center gap-4"
             >
-              <Shield size={24} /> Oyuna Başla
+              <Shield size={28} /> Yeni Oyun
+            </button>
+            <button 
+              onClick={() => setAppState('saves')}
+              className="text-left bg-slate-800/50 hover:bg-slate-700/50 text-white px-8 py-4 rounded-lg font-bold text-2xl transition-all hover:pl-12 flex items-center gap-4"
+            >
+              <Save size={28} /> Kayıtlar
             </button>
             <button 
               onClick={() => setAppState('gdd')}
-              className="bg-slate-800 hover:bg-slate-700 border border-slate-600 text-white px-8 py-4 rounded-full font-bold text-xl transition-all flex items-center justify-center gap-3"
+              className="text-left bg-slate-800/50 hover:bg-slate-700/50 text-white px-8 py-4 rounded-lg font-bold text-2xl transition-all hover:pl-12 flex items-center gap-4"
             >
-              <BookOpen size={24} /> Nasıl Oynanır?
+              <BookOpen size={28} /> GDD
+            </button>
+            <button 
+              onClick={() => setAppState('tutorial')}
+              className="text-left bg-slate-800/50 hover:bg-slate-700/50 text-white px-8 py-4 rounded-lg font-bold text-2xl transition-all hover:pl-12 flex items-center gap-4"
+            >
+              <Info size={28} /> Nasıl Oynanır
             </button>
             <button 
               onClick={() => setAppState('settings')}
-              className="bg-slate-800 hover:bg-slate-700 border border-slate-600 text-white px-8 py-4 rounded-full font-bold text-xl transition-all flex items-center justify-center gap-3"
+              className="text-left bg-slate-800/50 hover:bg-slate-700/50 text-white px-8 py-4 rounded-lg font-bold text-2xl transition-all hover:pl-12 flex items-center gap-4"
             >
-              <Settings size={24} /> Ayarlar
+              <Settings size={28} /> Ayarlar
             </button>
+          </div>
+        </div>
+        
+        {/* Profile Button Bottom Right */}
+        <button 
+          onClick={() => setAppState('profile')}
+          className="absolute bottom-8 right-8 bg-slate-800 hover:bg-slate-700 border border-slate-600 text-white p-4 rounded-full shadow-lg transition-all flex items-center gap-3 px-6 z-20"
+        >
+          <User size={24} /> Profil
+        </button>
+      </div>
+    );
+  }
+
+  if (appState === 'tutorial') {
+    return (
+      <div className="min-h-screen bg-slate-900 font-sans text-white p-8 overflow-y-auto">
+        <div className="max-w-4xl mx-auto">
+          <button 
+            onClick={() => setAppState('menu')}
+            className="flex items-center gap-2 text-indigo-400 hover:text-indigo-300 mb-8 transition-colors"
+          >
+            <ArrowLeft size={20} /> Ana Menüye Dön
+          </button>
+          
+          <h1 className="text-4xl font-black mb-8 text-white border-b border-slate-700 pb-4 flex items-center gap-3">
+            <BookOpen size={32} /> Nasıl Oynanır?
+          </h1>
+          
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+            <div className="bg-slate-800/50 p-6 rounded-2xl border border-slate-700">
+              <h3 className="text-xl font-bold text-indigo-400 mb-2">Dünya Yönetimi</h3>
+              <p className="text-slate-300">Ülkenizi seçin ve kaynaklarınızı (Bütçe, İstihbarat, Ordu, İstikrar) yöneterek 20 tur boyunca hayatta kalın.</p>
+            </div>
+            <div className="bg-slate-800/50 p-6 rounded-2xl border border-slate-700">
+              <h3 className="text-xl font-bold text-emerald-400 mb-2">Tehditler</h3>
+              <p className="text-slate-300">Haritada beliren tehditleri (Savaş, Ekonomi, Suikast vb.) birliklerinizle (Ordu, Ajan) zamanında durdurun.</p>
+            </div>
+            <div className="bg-slate-800/50 p-6 rounded-2xl border border-slate-700">
+              <h3 className="text-xl font-bold text-amber-400 mb-2">Diplomasi</h3>
+              <p className="text-slate-300">Diğer ülkelerle ittifak kurun veya savaş ilan edin. Müttefiklerinize ekonomik ve askeri destek sağlayın.</p>
+            </div>
+            <div className="bg-slate-800/50 p-6 rounded-2xl border border-slate-700">
+              <h3 className="text-xl font-bold text-rose-400 mb-2">Gizli Operasyonlar</h3>
+              <p className="text-slate-300">Ajanlarınızı kullanarak düşman ülkelerde casusluk yapın, yaptırım uygulayın veya liderlerine suikast düzenleyin.</p>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  const resetGameState = () => {
+    setGameState({
+      turn: 1,
+      maxTurns: 20,
+      resources: { ...initialResources },
+      threats: [],
+      units: [],
+      logs: ['Oyun başladı. Dünyayı yönetme sırası sizde.'],
+      mapMode: 'political',
+      gameOver: false,
+      victory: false,
+      worldState: gameState.worldState, // Keep the world state
+    });
+  };
+
+  const deleteSave = (id: number) => {
+    const updatedSaves = saves.filter(s => s.id !== id);
+    setSaves(updatedSaves);
+    localStorage.setItem('saves', JSON.stringify(updatedSaves));
+  };
+
+  if (appState === 'saves') {
+    return (
+      <div className="min-h-screen bg-slate-900 font-sans text-white p-8 overflow-y-auto">
+        <div className="max-w-4xl mx-auto">
+          <button 
+            onClick={() => setAppState('menu')}
+            className="flex items-center gap-2 text-indigo-400 hover:text-indigo-300 mb-8 transition-colors"
+          >
+            <ArrowLeft size={20} /> Ana Menüye Dön
+          </button>
+          
+          <h1 className="text-4xl font-black mb-8 text-white border-b border-slate-700 pb-4 flex items-center gap-3">
+            <ListOrdered size={32} /> Kayıtlı Oyunlar
+          </h1>
+          
+          <div className="space-y-4">
+            {saves.length === 0 ? (
+              <p className="text-slate-400 text-center py-12">Henüz kayıtlı oyun bulunmuyor.</p>
+            ) : (
+              saves.map((save, index) => {
+                const country = countriesData.find(c => c.id === save.playerCountryId);
+                return (
+                  <div key={save.id} className="bg-slate-800/50 p-6 rounded-2xl border border-slate-700 flex items-center justify-between">
+                    <div>
+                      <h3 className="text-xl font-bold text-white">
+                        {country?.properties.name || 'Bilinmeyen Ülke'} - Tur {save.gameState.turn}
+                      </h3>
+                      <p className="text-slate-400 text-sm">{save.timestamp}</p>
+                    </div>
+                    <div className="flex gap-3">
+                      <button 
+                        onClick={() => loadGame(save)}
+                        className="bg-indigo-600 hover:bg-indigo-500 text-white px-6 py-3 rounded-full font-bold transition-all"
+                      >
+                        Yükle
+                      </button>
+                      <button 
+                        onClick={() => deleteSave(save.id)}
+                        className="bg-red-900 hover:bg-red-800 text-white px-6 py-3 rounded-full font-bold transition-all"
+                      >
+                        Sil
+                      </button>
+                    </div>
+                  </div>
+                );
+              })
+            )}
           </div>
         </div>
       </div>
@@ -717,148 +1235,401 @@ export default function App() {
           <h1 className="text-4xl font-black mb-8 text-white border-b border-slate-700 pb-4 flex items-center gap-3">
             <Settings size={32} /> Oyun Ayarları
           </h1>
-          
-          <div className="space-y-8 text-slate-300">
-            {/* Global Settings */}
-            <section className="bg-slate-800/50 p-6 rounded-2xl border border-slate-700">
-              <h2 className="text-2xl font-bold text-indigo-400 mb-4 flex items-center gap-2">Genel Ayarlar</h2>
-              <div className="flex items-center gap-4">
-                <label className="font-semibold">Oyun Tur Sayısı:</label>
-                <input 
-                  type="number" 
-                  value={gameState.maxTurns}
-                  onChange={(e) => setGameState(prev => ({ ...prev, maxTurns: parseInt(e.target.value) || 20 }))}
-                  className="bg-slate-900 border border-slate-600 rounded px-3 py-2 text-white w-24"
-                  min="10" max="1000"
-                />
-              </div>
-            </section>
 
-            {/* Country Settings */}
-            <section className="bg-slate-800/50 p-6 rounded-2xl border border-slate-700">
-              <h2 className="text-2xl font-bold text-emerald-400 mb-4 flex items-center gap-2">Ülke Düzenleme</h2>
-              <div className="mb-4">
-                <select 
-                  className="bg-slate-900 border border-slate-600 rounded px-4 py-2 text-white w-full max-w-md"
-                  onChange={(e) => setSelectedCountry(countriesData.find(c => c.id === e.target.value || c.properties.name === e.target.value))}
-                  value={selectedCountry?.id || selectedCountry?.properties?.name || ''}
-                >
-                  <option value="">Bir ülke seçin...</option>
-                  {Object.values(gameState.worldState).sort((a,b) => a.name.localeCompare(b.name)).map(c => (
-                    <option key={c.id} value={c.id}>{c.name}</option>
-                  ))}
-                </select>
-              </div>
+          <div className="flex gap-4 mb-8">
+            <button 
+              onClick={() => setSettingsTab('general')}
+              className={`px-6 py-2 rounded-full font-bold ${settingsTab === 'general' ? 'bg-indigo-600 text-white' : 'bg-slate-700 text-slate-300'}`}
+            >
+              Genel Ayarlar
+            </button>
+            <button 
+              onClick={() => setSettingsTab('costs')}
+              className={`px-6 py-2 rounded-full font-bold ${settingsTab === 'costs' ? 'bg-indigo-600 text-white' : 'bg-slate-700 text-slate-300'}`}
+            >
+              Maliyetler
+            </button>
+            <button 
+              onClick={() => setSettingsTab('database')}
+              className={`px-6 py-2 rounded-full font-bold ${settingsTab === 'database' ? 'bg-indigo-600 text-white' : 'bg-slate-700 text-slate-300'}`}
+            >
+              Veritabanı
+            </button>
+          </div>
 
-              {selectedCountry && gameState.worldState[selectedCountry.id || selectedCountry.properties.name] && (
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                  {['technology', 'agriculture', 'army', 'economy'].map(stat => (
-                    <div key={stat} className="flex flex-col gap-1">
-                      <label className="text-sm text-gray-400 capitalize">{stat === 'technology' ? 'Teknoloji' : stat === 'agriculture' ? 'Tarım' : stat === 'army' ? 'Ordu' : 'Ekonomi'}</label>
-                      <input 
-                        type="number" 
-                        value={gameState.worldState[selectedCountry.id || selectedCountry.properties.name][stat as keyof CountryState] as number}
-                        onChange={(e) => {
-                          const val = parseInt(e.target.value) || 0;
-                          setGameState(prev => ({
-                            ...prev,
-                            worldState: {
-                              ...prev.worldState,
-                              [selectedCountry.id || selectedCountry.properties.name]: {
-                                ...prev.worldState[selectedCountry.id || selectedCountry.properties.name],
-                                [stat]: val
-                              }
-                            }
-                          }));
-                        }}
-                        className="bg-slate-900 border border-slate-600 rounded px-3 py-2 text-white"
-                      />
-                    </div>
-                  ))}
+          {settingsTab === 'general' ? (
+            <div className="space-y-6">
+              <section className="bg-slate-800/50 p-6 rounded-2xl border border-slate-700 space-y-6">
+                <h2 className="text-2xl font-bold text-indigo-400 mb-4 flex items-center gap-2">Genel Ayarlar</h2>
+                <div className="flex items-center justify-between">
+                  <label className="font-semibold">Oyun Tur Sayısı:</label>
+                  <input 
+                    type="number" 
+                    value={gameState.maxTurns}
+                    onChange={(e) => setGameState(prev => ({ ...prev, maxTurns: parseInt(e.target.value) || 20 }))}
+                    className="bg-slate-900 border border-slate-600 rounded px-3 py-2 text-white w-24"
+                    min="10" max="1000"
+                  />
                 </div>
-              )}
-            </section>
+                <div className="flex items-center justify-between">
+                  <label className="font-semibold">Zorluk Seviyesi:</label>
+                  <select 
+                    value={difficulty}
+                    onChange={(e) => setDifficulty(e.target.value as 'easy' | 'medium' | 'hard')}
+                    className="bg-slate-900 border border-slate-600 rounded px-3 py-2 text-white"
+                  >
+                    <option value="easy">Kolay</option>
+                    <option value="medium">Orta</option>
+                    <option value="hard">Zor</option>
+                  </select>
+                </div>
+                <div className="flex items-center justify-between">
+                  <label className="font-semibold">Dil:</label>
+                  <select 
+                    value={language}
+                    onChange={(e) => setLanguage(e.target.value as 'tr' | 'en')}
+                    className="bg-slate-900 border border-slate-600 rounded px-3 py-2 text-white"
+                  >
+                    <option value="tr">Türkçe</option>
+                    <option value="en">English</option>
+                  </select>
+                </div>
+                <div className="flex items-center justify-between">
+                  <label className="font-semibold">Otomatik Oynat:</label>
+                  <input 
+                    type="checkbox" 
+                    checked={autoPlay}
+                    onChange={(e) => setAutoPlay(e.target.checked)}
+                    className="w-6 h-6 accent-indigo-600"
+                  />
+                </div>
+              </section>
 
-            {/* Diplomacy Settings */}
-            <section className="bg-slate-800/50 p-6 rounded-2xl border border-slate-700">
-              <h2 className="text-2xl font-bold text-red-400 mb-4 flex items-center gap-2">Diplomasi Düzenleme</h2>
-              <p className="text-sm text-gray-400 mb-4">Ülke düzenleme bölümünden seçtiğiniz ülkenin diplomatik ilişkilerini buradan yönetebilirsiniz.</p>
-              
-              {selectedCountry && gameState.worldState[selectedCountry.id || selectedCountry.properties.name] ? (
+              <section className="bg-slate-800/50 p-6 rounded-2xl border border-slate-700 mt-6">
+                <h2 className="text-2xl font-bold text-indigo-400 mb-4 flex items-center gap-2">Başlangıç Ayarları</h2>
                 <div className="space-y-4">
-                  <div className="flex flex-col gap-2">
-                    <label className="text-sm text-gray-400">Yeni Müttefik Ekle</label>
-                    <select 
-                      className="bg-slate-900 border border-slate-600 rounded px-4 py-2 text-white w-full max-w-md"
-                      onChange={(e) => {
-                        if(!e.target.value) return;
-                        const targetId = e.target.value;
-                        const sourceId = selectedCountry.id || selectedCountry.properties.name;
-                        setGameState(prev => {
-                          const newWorld = {...prev.worldState};
-                          if(!newWorld[sourceId].allies.includes(targetId)) newWorld[sourceId].allies.push(targetId);
-                          if(!newWorld[targetId].allies.includes(sourceId)) newWorld[targetId].allies.push(sourceId);
-                          newWorld[sourceId].enemies = newWorld[sourceId].enemies.filter(id => id !== targetId);
-                          newWorld[targetId].enemies = newWorld[targetId].enemies.filter(id => id !== sourceId);
-                          return {...prev, worldState: newWorld};
-                        });
-                        e.target.value = "";
-                      }}
-                    >
-                      <option value="">Ülke Seç...</option>
-                      {Object.values(gameState.worldState)
-                        .filter(c => c.id !== (selectedCountry.id || selectedCountry.properties.name) && !gameState.worldState[selectedCountry.id || selectedCountry.properties.name].allies.includes(c.id))
-                        .sort((a,b) => a.name.localeCompare(b.name))
-                        .map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
-                    </select>
+                  <div className="flex items-center justify-between">
+                    <label className="font-semibold">Başlangıç Bütçesi:</label>
+                    <input 
+                      type="number" 
+                      value={initialResources.budget}
+                      onChange={(e) => setInitialResources(prev => ({ ...prev, budget: parseInt(e.target.value) || 0 }))}
+                      className="bg-slate-900 border border-slate-600 rounded px-3 py-2 text-white w-24"
+                      min="0"
+                    />
                   </div>
-                  
-                  <div className="flex flex-col gap-2">
-                    <label className="text-sm text-gray-400">Yeni Düşman Ekle (Savaş)</label>
-                    <select 
-                      className="bg-slate-900 border border-slate-600 rounded px-4 py-2 text-white w-full max-w-md"
-                      onChange={(e) => {
-                        if(!e.target.value) return;
-                        const targetId = e.target.value;
-                        const sourceId = selectedCountry.id || selectedCountry.properties.name;
-                        setGameState(prev => {
-                          const newWorld = {...prev.worldState};
-                          if(!newWorld[sourceId].enemies.includes(targetId)) newWorld[sourceId].enemies.push(targetId);
-                          if(!newWorld[targetId].enemies.includes(sourceId)) newWorld[targetId].enemies.push(sourceId);
-                          newWorld[sourceId].allies = newWorld[sourceId].allies.filter(id => id !== targetId);
-                          newWorld[targetId].allies = newWorld[targetId].allies.filter(id => id !== sourceId);
-                          return {...prev, worldState: newWorld};
-                        });
-                        e.target.value = "";
-                      }}
-                    >
-                      <option value="">Ülke Seç...</option>
-                      {Object.values(gameState.worldState)
-                        .filter(c => c.id !== (selectedCountry.id || selectedCountry.properties.name) && !gameState.worldState[selectedCountry.id || selectedCountry.properties.name].enemies.includes(c.id))
-                        .sort((a,b) => a.name.localeCompare(b.name))
-                        .map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
-                    </select>
+                  <div className="flex items-center justify-between">
+                    <label className="font-semibold">Başlangıç İstihbaratı:</label>
+                    <input 
+                      type="number" 
+                      value={initialResources.intelligence}
+                      onChange={(e) => setInitialResources(prev => ({ ...prev, intelligence: parseInt(e.target.value) || 0 }))}
+                      className="bg-slate-900 border border-slate-600 rounded px-3 py-2 text-white w-24"
+                      min="0"
+                    />
                   </div>
-                  
-                  <div className="mt-4">
-                    <h3 className="text-sm font-bold text-white mb-2">Mevcut İlişkiler:</h3>
-                    <div className="flex flex-wrap gap-2">
-                      {gameState.worldState[selectedCountry.id || selectedCountry.properties.name].allies.map(allyId => (
-                        <span key={allyId} className="bg-green-900/50 text-green-300 px-2 py-1 rounded text-xs border border-green-700">
-                          Müttefik: {gameState.worldState[allyId]?.name}
-                        </span>
-                      ))}
-                      {gameState.worldState[selectedCountry.id || selectedCountry.properties.name].enemies.map(enemyId => (
-                        <span key={enemyId} className="bg-red-900/50 text-red-300 px-2 py-1 rounded text-xs border border-red-700">
-                          Savaşta: {gameState.worldState[enemyId]?.name}
-                        </span>
-                      ))}
+                  <div className="flex items-center justify-between">
+                    <label className="font-semibold">Başlangıç Askeri Gücü:</label>
+                    <input 
+                      type="number" 
+                      value={initialResources.military}
+                      onChange={(e) => setInitialResources(prev => ({ ...prev, military: parseInt(e.target.value) || 0 }))}
+                      className="bg-slate-900 border border-slate-600 rounded px-3 py-2 text-white w-24"
+                      min="0"
+                    />
+                  </div>
+                  <div className="flex items-center justify-between">
+                    <label className="font-semibold">Başlangıç İstikrarı:</label>
+                    <input 
+                      type="number" 
+                      value={initialResources.stability}
+                      onChange={(e) => setInitialResources(prev => ({ ...prev, stability: parseInt(e.target.value) || 0 }))}
+                      className="bg-slate-900 border border-slate-600 rounded px-3 py-2 text-white w-24"
+                      min="0"
+                    />
+                  </div>
+                  <button onClick={saveInitialResources} className="w-full bg-indigo-600 text-white py-2 rounded-lg font-bold hover:bg-indigo-500">Kaydet</button>
+                </div>
+              </section>
+
+              <section className="bg-slate-800/50 p-6 rounded-2xl border border-slate-700 mt-6">
+                <h2 className="text-2xl font-bold text-indigo-400 mb-4 flex items-center gap-2">Oyun Hızı</h2>
+                <div className="flex items-center justify-between">
+                  <label className="font-semibold">Oyun Hızı (ms):</label>
+                  <input 
+                    type="number" 
+                    value={gameSpeed}
+                    onChange={(e) => setGameSpeed(parseInt(e.target.value) || 1000)}
+                    className="bg-slate-900 border border-slate-600 rounded px-3 py-2 text-white w-24"
+                    min="500" max="5000"
+                  />
+                </div>
+                <div className="flex items-center justify-between">
+                  <label className="font-semibold">Ses Efektleri:</label>
+                  <input 
+                    type="checkbox" 
+                    checked={soundEnabled}
+                    onChange={(e) => setSoundEnabled(e.target.checked)}
+                    className="w-6 h-6 accent-indigo-600"
+                  />
+                </div>
+                <div className="flex items-center justify-between">
+                  <label className="font-semibold">Müzik:</label>
+                  <input 
+                    type="checkbox" 
+                    checked={musicEnabled}
+                    onChange={(e) => setMusicEnabled(e.target.checked)}
+                    className="w-6 h-6 accent-indigo-600"
+                  />
+                </div>
+              </section>
+            </div>
+          ) : settingsTab === 'costs' ? (
+            <section className="bg-slate-800/50 p-6 rounded-2xl border border-slate-700 space-y-6">
+              <h2 className="text-2xl font-bold text-indigo-400 mb-4">Maliyet Ayarları</h2>
+              {(() => {
+                const ACTION_METADATA: Record<string, { trName: string, desc: string, icon: any }> = {
+                  deployArmy: { trName: "Ordu Konuşlandır", desc: "Sınırlara ordu yerleştirir.", icon: Swords },
+                  deployAgent: { trName: "Ajan Yerleştir", desc: "Düşman ülkeye ajan sızdırır.", icon: User },
+                  ekonomi: { trName: "Ekonomi Yatırımı", desc: "Ülke ekonomisini güçlendirir.", icon: Coins },
+                  peace: { trName: "Barış", desc: "Savaşı sonlandırır.", icon: Handshake },
+                  attack: { trName: "Saldırı", desc: "Düşman ülkeye saldırı başlatır.", icon: Swords },
+                  spy: { trName: "Casusluk", desc: "Gizli bilgi toplar.", icon: Eye },
+                  intel: { trName: "İstihbarat", desc: "Düşman planlarını öğrenir.", icon: Activity },
+                  sanction: { trName: "Yaptırım", desc: "Ekonomik kısıtlamalar uygular.", icon: AlertTriangle },
+                  rebel: { trName: "İsyan Çıkar", desc: "Düşman ülkede kaos yaratır.", icon: AlertTriangle },
+                  assassinate: { trName: "Suikast", desc: "Liderleri ortadan kaldırır.", icon: Crosshair },
+                  rebelSuppress: { trName: "İsyan Bastır", desc: "İç karışıklıkları durdurur.", icon: Shield },
+                  crisisSolve: { trName: "Kriz Çöz", desc: "Ülke içi krizleri çözer.", icon: RefreshCw },
+                  allyEconomy: { trName: "Ekonomik Destek", desc: "Müttefik ekonomisine yardım eder.", icon: Coins },
+                  allyMilitary: { trName: "Askeri Destek", desc: "Müttefik ordusuna yardım eder.", icon: Swords },
+                  allyTech: { trName: "Teknoloji Desteği", desc: "Müttefik teknolojisini geliştirir.", icon: Zap },
+                  counterTerrorism: { trName: "Terörle Mücadele", desc: "Terör saldırılarını önler.", icon: Shield },
+                  counterRebellion: { trName: "İsyanla Mücadele", desc: "İsyanları engeller.", icon: AlertTriangle },
+                  counterAssassination: { trName: "Suikast Önleme", desc: "Liderleri korur.", icon: Shield },
+                  counterWar: { trName: "Savaşla Mücadele", desc: "Savaş tehditlerini bertaraf eder.", icon: Swords },
+                };
+
+                return Object.entries({
+                  diplomasi: { title: "Diplomasi", icon: Handshake, description: "Uluslararası ilişkileri yönetin.", actions: ["peace", "attack"] },
+                  gizli: { title: "Gizli Operasyonlar", icon: Eye, description: "Ülke dışındaki gizli faaliyetler.", actions: ["spy", "intel", "sanction", "rebel", "assassinate", "crisisSolve", "rebelSuppress"] },
+                  askeri: { title: "Askeri", icon: Swords, description: "Askeri güç ve savunma.", actions: ["deployArmy", "deployAgent", "counterTerrorism", "counterRebellion", "counterAssassination", "counterWar"] },
+                  ekonomi: { title: "Ekonomi", icon: Coins, description: "Ekonomik yatırımlar ve destekler.", actions: ["ekonomi", "allyEconomy", "allyMilitary", "allyTech"] }
+                }).map(([category, config]) => (
+                  <div key={category} className="space-y-3">
+                    <div className="flex items-center gap-2 text-indigo-300">
+                      <config.icon className="w-5 h-5" />
+                      <h3 className="text-lg font-semibold">{config.title}</h3>
+                    </div>
+                    <p className="text-sm text-slate-400">{config.description}</p>
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                      {config.actions.map(action => {
+                        const meta = ACTION_METADATA[action];
+                        return (
+                          <div key={action} className="flex items-center justify-between bg-slate-900/50 p-3 rounded-lg border border-slate-700">
+                            <div className="flex items-center gap-2">
+                              <meta.icon className="w-4 h-4 text-slate-500" />
+                              <div>
+                                  <label className="text-sm font-medium">{meta.trName}</label>
+                                  <p className="text-xs text-slate-500">{meta.desc}</p>
+                              </div>
+                            </div>
+                            <input 
+                              type="number" 
+                              value={actionCosts[action as keyof typeof actionCosts] as number}
+                              onChange={(e) => setActionCosts(prev => ({ ...prev, [action]: parseInt(e.target.value) || 0 }))}
+                              className="bg-slate-950 border border-slate-600 rounded px-2 py-1 text-white w-20 text-sm"
+                              min="0"
+                            />
+                          </div>
+                        );
+                      })}
                     </div>
                   </div>
+                ));
+              })()}
+              <button onClick={saveActionCosts} className="w-full bg-indigo-600 text-white py-2 rounded-lg font-bold hover:bg-indigo-500">Kaydet</button>
+            </section>
+          ) : (
+            <section className="bg-slate-800/50 p-6 rounded-2xl border border-slate-700 mt-6">
+              <div className="flex justify-between items-center mb-4">
+                <h2 className="text-2xl font-bold text-indigo-400 flex items-center gap-2">Veritabanı (Ülkeler)</h2>
+                <input 
+                  type="text" 
+                  placeholder="Ülke ara..." 
+                  className="bg-slate-900 border border-slate-600 rounded px-3 py-2 text-white"
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                />
+                <button onClick={saveCountryData} className="bg-indigo-600 text-white px-4 py-2 rounded-lg font-bold hover:bg-indigo-500">Kaydet</button>
+              </div>
+              <div className="flex gap-6">
+                <div className="w-1/3 h-[500px] overflow-y-auto bg-slate-900 rounded-xl border border-slate-700">
+                  {Object.entries(countryMetadata)
+                    .filter(([eng, data]: [string, CountryData]) => 
+                      eng.toLowerCase().includes(searchQuery.toLowerCase()) || 
+                      (data.tr?.toLowerCase() || '').includes(searchQuery.toLowerCase())
+                    )
+                    .map(([eng, data]: [string, CountryData]) => (
+                      <button 
+                        key={eng}
+                        onClick={() => setSelectedCountryId(eng)}
+                        className={`w-full text-left p-4 border-b border-slate-700 hover:bg-slate-700/50 flex items-center gap-3 ${selectedCountryId === eng ? 'bg-slate-700' : ''}`}
+                      >
+                        <img src={`https://flagcdn.com/w40/${data.code}.png`} alt={eng} className="w-8 h-6 rounded shadow-sm" />
+                        <span className="font-medium">{data.tr}</span>
+                      </button>
+                    ))}
                 </div>
-              ) : (
-                <p className="text-gray-500 italic">Önce yukarıdan bir ülke seçin.</p>
-              )}
+                <div className="flex-1 bg-slate-900 p-6 rounded-xl border border-slate-700">
+                  {selectedCountryId && countryMetadata[selectedCountryId] ? (
+                    <div className="space-y-4">
+                      <h3 className="text-xl font-bold text-indigo-400 mb-4">{countryMetadata[selectedCountryId].tr} Detayları</h3>
+                      <div className="grid grid-cols-2 gap-4">
+                        <div>
+                          <label className="block text-sm text-slate-400">Ülke Kodu (ISO)</label>
+                          <input type="text" value={countryMetadata[selectedCountryId].code || ''} onChange={(e) => setCountryMetadata(prev => ({...prev, [selectedCountryId]: {...prev[selectedCountryId], code: e.target.value}}))} className="w-full bg-slate-800 border border-slate-600 rounded px-3 py-2 text-white" />
+                        </div>
+                        <div>
+                          <label className="block text-sm text-slate-400">Türkçe İsim</label>
+                          <input type="text" value={countryMetadata[selectedCountryId].tr || ''} onChange={(e) => setCountryMetadata(prev => ({...prev, [selectedCountryId]: {...prev[selectedCountryId], tr: e.target.value}}))} className="w-full bg-slate-800 border border-slate-600 rounded px-3 py-2 text-white" />
+                        </div>
+                        <div>
+                          <label className="block text-sm text-slate-400">İngilizce İsim</label>
+                          <input type="text" value={countryMetadata[selectedCountryId].en || ''} onChange={(e) => setCountryMetadata(prev => ({...prev, [selectedCountryId]: {...prev[selectedCountryId], en: e.target.value}}))} className="w-full bg-slate-800 border border-slate-600 rounded px-3 py-2 text-white" />
+                        </div>
+                        <div>
+                          <label className="block text-sm text-slate-400">Bayrak URL</label>
+                          <input type="text" value={countryMetadata[selectedCountryId].flagUrl || ''} onChange={(e) => setCountryMetadata(prev => ({...prev, [selectedCountryId]: {...prev[selectedCountryId], flagUrl: e.target.value}}))} className="w-full bg-slate-800 border border-slate-600 rounded px-3 py-2 text-white" />
+                        </div>
+                        <div>
+                          <label className="block text-sm text-slate-400">Başkan</label>
+                          <input type="text" value={countryMetadata[selectedCountryId].leader || ''} onChange={(e) => setCountryMetadata(prev => ({...prev, [selectedCountryId]: {...prev[selectedCountryId], leader: e.target.value}}))} className="w-full bg-slate-800 border border-slate-600 rounded px-3 py-2 text-white" />
+                        </div>
+                        <div>
+                          <label className="block text-sm text-slate-400">Yönetim</label>
+                          <input type="text" value={countryMetadata[selectedCountryId].governmentType || ''} onChange={(e) => setCountryMetadata(prev => ({...prev, [selectedCountryId]: {...prev[selectedCountryId], governmentType: e.target.value}}))} className="w-full bg-slate-800 border border-slate-600 rounded px-3 py-2 text-white" />
+                        </div>
+                        <div>
+                          <label className="block text-sm text-slate-400">Başkent</label>
+                          <input type="text" value={countryMetadata[selectedCountryId].capital || ''} onChange={(e) => setCountryMetadata(prev => ({...prev, [selectedCountryId]: {...prev[selectedCountryId], capital: e.target.value}}))} className="w-full bg-slate-800 border border-slate-600 rounded px-3 py-2 text-white" />
+                        </div>
+                        <div>
+                          <label className="block text-sm text-slate-400">Dil</label>
+                          <input type="text" value={countryMetadata[selectedCountryId].language || ''} onChange={(e) => setCountryMetadata(prev => ({...prev, [selectedCountryId]: {...prev[selectedCountryId], language: e.target.value}}))} className="w-full bg-slate-800 border border-slate-600 rounded px-3 py-2 text-white" />
+                        </div>
+                        <div>
+                          <label className="block text-sm text-slate-400">Ordu</label>
+                          <input type="number" value={countryMetadata[selectedCountryId].army} onChange={(e) => setCountryMetadata(prev => ({...prev, [selectedCountryId]: {...prev[selectedCountryId], army: parseInt(e.target.value) || 0}}))} className="w-full bg-slate-800 border border-slate-600 rounded px-3 py-2 text-white" />
+                        </div>
+                        <div>
+                          <label className="block text-sm text-slate-400">Ekonomi</label>
+                          <input type="number" value={countryMetadata[selectedCountryId].economy} onChange={(e) => setCountryMetadata(prev => ({...prev, [selectedCountryId]: {...prev[selectedCountryId], economy: parseInt(e.target.value) || 0}}))} className="w-full bg-slate-800 border border-slate-600 rounded px-3 py-2 text-white" />
+                        </div>
+                        <div>
+                          <label className="block text-sm text-slate-400">Teknoloji</label>
+                          <input type="number" value={countryMetadata[selectedCountryId].technology} onChange={(e) => setCountryMetadata(prev => ({...prev, [selectedCountryId]: {...prev[selectedCountryId], technology: parseInt(e.target.value) || 0}}))} className="w-full bg-slate-800 border border-slate-600 rounded px-3 py-2 text-white" />
+                        </div>
+                        <div>
+                          <label className="block text-sm text-slate-400">Tarım</label>
+                          <input type="number" value={countryMetadata[selectedCountryId].agriculture} onChange={(e) => setCountryMetadata(prev => ({...prev, [selectedCountryId]: {...prev[selectedCountryId], agriculture: parseInt(e.target.value) || 0}}))} className="w-full bg-slate-800 border border-slate-600 rounded px-3 py-2 text-white" />
+                        </div>
+                        <div>
+                          <label className="block text-sm text-slate-400">Nüfus</label>
+                          <input type="number" value={countryMetadata[selectedCountryId].population} onChange={(e) => setCountryMetadata(prev => ({...prev, [selectedCountryId]: {...prev[selectedCountryId], population: parseInt(e.target.value) || 0}}))} className="w-full bg-slate-800 border border-slate-600 rounded px-3 py-2 text-white" />
+                        </div>
+                        <div>
+                          <label className="block text-sm text-slate-400">GSYİH</label>
+                          <input type="number" value={countryMetadata[selectedCountryId].gdp} onChange={(e) => setCountryMetadata(prev => ({...prev, [selectedCountryId]: {...prev[selectedCountryId], gdp: parseInt(e.target.value) || 0}}))} className="w-full bg-slate-800 border border-slate-600 rounded px-3 py-2 text-white" />
+                        </div>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="text-slate-500 text-center py-20">Lütfen bir ülke seçin</div>
+                  )}
+                </div>
+              </div>
+            </section>
+          )}
+
+        </div>
+      </div>
+    );
+  }
+
+  if (appState === 'profile') {
+    return (
+      <div className="min-h-screen bg-slate-900 font-sans text-white p-8 overflow-y-auto">
+        <div className="max-w-4xl mx-auto">
+          <button 
+            onClick={() => setAppState('menu')}
+            className="flex items-center gap-2 text-indigo-400 hover:text-indigo-300 mb-8 transition-colors"
+          >
+            <ArrowLeft size={20} /> Ana Menüye Dön
+          </button>
+          
+          <h1 className="text-4xl font-black mb-8 text-white border-b border-slate-700 pb-4 flex items-center gap-3">
+            <User size={32} /> Profil Bilgileri
+          </h1>
+          
+          <section className="bg-slate-800/50 p-6 rounded-2xl border border-slate-700 flex items-center gap-6">
+            <div className="w-24 h-24 rounded-full bg-indigo-900 flex items-center justify-center text-4xl font-bold text-white border-4 border-indigo-500">
+              {userProfile?.name?.charAt(0) || 'U'}
+            </div>
+            <div>
+              <h2 className="text-2xl font-bold text-white">{userProfile?.name || 'Kullanıcı'}</h2>
+              <p className="text-slate-400">Deneyimli Stratejist</p>
+            </div>
+          </section>
+        </div>
+      </div>
+    );
+  }
+
+  if (appState === 'tutorial') {
+    return (
+      <div className="min-h-screen bg-slate-900 font-sans text-white p-8 overflow-y-auto">
+        <div className="max-w-4xl mx-auto">
+          <button 
+            onClick={() => setAppState('menu')}
+            className="flex items-center gap-2 text-indigo-400 hover:text-indigo-300 mb-8 transition-colors"
+          >
+            <ArrowLeft size={20} /> Ana Menüye Dön
+          </button>
+          
+          <h1 className="text-4xl font-black mb-8 text-white border-b border-slate-700 pb-4 flex items-center gap-3">
+            <BookOpen size={32} /> Eğitim Modu
+          </h1>
+          
+          <div className="space-y-8 text-slate-300 leading-relaxed">
+            <section className="bg-slate-800/50 p-6 rounded-2xl border border-slate-700">
+              <h2 className="text-2xl font-bold text-indigo-400 mb-4">1. Temel Mekanikler</h2>
+              <p>Oyun, kaynak yönetimi ve strateji üzerine kuruludur. Her tur, ülkenizin kaynaklarını (Bütçe, İstihbarat, Ordu, İstikrar) yöneterek dünyadaki krizleri çözmeye çalışırsınız.</p>
+            </section>
+            <section className="bg-slate-800/50 p-6 rounded-2xl border border-slate-700">
+              <h2 className="text-2xl font-bold text-red-400 mb-4">2. Tehditler</h2>
+              <p>Dünyada Savaş, Terörizm, Suikast, İç Karışıklık ve Ekonomi krizleri çıkar. Bunları çözmek için birliklerinizi kriz bölgelerine göndermelisiniz.</p>
+            </section>
+            <section className="bg-slate-800/50 p-6 rounded-2xl border border-slate-700">
+              <h2 className="text-2xl font-bold text-blue-400 mb-4">3. Diplomasi</h2>
+              <p>Diğer ülkelerle ittifak kurabilir veya savaş ilan edebilirsiniz. Müttefiklerinize destek vererek onları güçlendirebilirsiniz.</p>
+            </section>
+            <section className="bg-slate-800/50 p-6 rounded-2xl border border-slate-700">
+              <h2 className="text-2xl font-bold text-purple-400 mb-4 flex items-center gap-2"><Eye /> 4. Gizli Operasyonlar ve Diplomasi</h2>
+              <p className="mb-4">Diğer ülkelerin iç işlerine müdahale edebilir veya müttefiklerinizi destekleyebilirsiniz:</p>
+              <ul className="list-disc pl-6 space-y-2">
+                <li><strong>Ajan Yerleştirme:</strong> Hedef ülkeye ajan sızdırarak istihbarat toplayabilir ve gizli operasyonlar düzenleyebilirsiniz.</li>
+                <li><strong>Muhalifleri Destekleme:</strong> Ajanlarınız aracılığıyla hedef ülkede iç savaş çıkarma riskini artırabilirsiniz.</li>
+                <li><strong>Suikast:</strong> Hedef ülkenin liderine suikast düzenleyerek yönetimi değiştirebilir ve ülkeyi kaosa sürükleyebilirsiniz.</li>
+                <li><strong>Müttefik Desteği:</strong> İttifak kurduğunuz ülkelere ekonomik, askeri ve teknolojik destek sağlayarak onları güçlendirebilirsiniz.</li>
+              </ul>
+            </section>
+            <section className="bg-slate-800/50 p-6 rounded-2xl border border-slate-700">
+              <h2 className="text-2xl font-bold text-emerald-400 mb-4 flex items-center gap-2"><Activity /> 5. Kazanma ve Kaybetme</h2>
+              <ul className="list-disc pl-6 space-y-2">
+                <li><strong>Zafer:</strong> 20. turun sonuna kadar İstikrarınızı 0'ın üstünde tutmayı başarırsanız oyunu kazanırsınız.</li>
+                <li><strong>Mağlubiyet:</strong> İstikrarınız 0 veya altına düşerse hükümetiniz düşer ve oyunu kaybedersiniz.</li>
+              </ul>
             </section>
           </div>
         </div>
@@ -877,51 +1648,30 @@ export default function App() {
             <ArrowLeft size={20} /> Ana Menüye Dön
           </button>
           
-          <h1 className="text-4xl font-black mb-8 text-white border-b border-slate-700 pb-4">Oyun Tasarım Dokümanı (GDD) & Kurallar</h1>
+          <h1 className="text-4xl font-black mb-8 text-white border-b border-slate-700 pb-4 flex items-center gap-3">
+            <BookOpen size={32} /> Oyun Tasarım Dokümanı
+          </h1>
           
           <div className="space-y-8 text-slate-300 leading-relaxed">
             <section className="bg-slate-800/50 p-6 rounded-2xl border border-slate-700">
-              <h2 className="text-2xl font-bold text-indigo-400 mb-4 flex items-center gap-2"><GlobeIcon /> 1. Oyunun Amacı</h2>
-              <p>Oyuna başlarken dünya haritasından yöneteceğiniz <strong>kendi ülkenizi</strong> seçersiniz. Amacınız, 20 tur boyunca hem kendi ülkenizi hem de dünyayı dış tehditlere karşı korumak ve <strong>İstikrar</strong> seviyenizi sıfırın üstünde tutmaktır.</p>
+              <h2 className="text-2xl font-bold text-indigo-400 mb-4">1. Oyunun Amacı</h2>
+              <p>Dünyayı yöneten bir lider olarak, ülkenizin istikrarını korumak ve küresel krizleri yönetmek.</p>
             </section>
-
             <section className="bg-slate-800/50 p-6 rounded-2xl border border-slate-700">
-              <h2 className="text-2xl font-bold text-red-400 mb-4 flex items-center gap-2"><AlertTriangle /> 2. Tehditler ve Krizler</h2>
-              <p className="mb-4">Dünyanın rastgele bölgelerinde veya doğrudan kendi ülkenizde 5 farklı tehdit ortaya çıkabilir: <strong>Savaş, Terörizm, Suikast, İç Karışıklık, Ekonomi</strong>.</p>
-              <ul className="list-disc pl-6 space-y-2">
-                <li>Her tehdidin bir şiddeti (1-5) ve çözülmesi için kalan bir süresi (Tur) vardır.</li>
-                <li>Süre dolduğunda tehdit gerçekleşir ve İstikrarınıza zarar verir.</li>
-                <li><strong>Kritik Kural:</strong> Eğer tehdit <em>kendi ülkenizde</em> gerçekleşirse, İstikrarınıza <strong>2 KAT</strong> daha fazla hasar verir! Dış tehditlerin ülkenize sıçramasını engellemelisiniz.</li>
-              </ul>
+              <h2 className="text-2xl font-bold text-red-400 mb-4">2. Temel Mekanikler</h2>
+              <p>Kaynak yönetimi (Bütçe, İstihbarat, Ordu, İstikrar) ve tur tabanlı strateji.</p>
             </section>
-
             <section className="bg-slate-800/50 p-6 rounded-2xl border border-slate-700">
-              <h2 className="text-2xl font-bold text-blue-400 mb-4 flex items-center gap-2"><Shield /> 3. Birlikler ve Müdahale</h2>
-              <p className="mb-4">Kaynaklarınızı kullanarak kriz bölgelerine birlik gönderebilirsiniz:</p>
-              <ul className="list-disc pl-6 space-y-2">
-                <li><strong>Ordu (Maliyet: 20 Bütçe, 15 Askeri):</strong> Bulunduğu ülkedeki <em>Savaş</em> ve <em>Terörizm</em> tehditlerinin şiddetini her tur azaltır.</li>
-                <li><strong>Ajan (Maliyet: 15 Bütçe, 10 İstihbarat):</strong> Bulunduğu ülkedeki <em>Suikast</em> ve <em>İç Karışıklık</em> tehditlerinin şiddetini her tur azaltır.</li>
-                <li><strong>Ekonomik Yatırım (Maliyet: 30 Bütçe):</strong> Seçili ülkedeki ekonomik krizi anında çözer ve +10 İstikrar kazandırır.</li>
-              </ul>
+              <h2 className="text-2xl font-bold text-blue-400 mb-4">3. Tehditler ve Krizler</h2>
+              <p>Dünya genelinde ortaya çıkan Savaş, Terörizm, Suikast ve Ekonomi krizlerine karşı birliklerinizi kullanarak müdahale edin.</p>
             </section>
-
             <section className="bg-slate-800/50 p-6 rounded-2xl border border-slate-700">
-              <h2 className="text-2xl font-bold text-purple-400 mb-4 flex items-center gap-2"><Eye /> 4. Gizli Operasyonlar ve Diplomasi</h2>
-              <p className="mb-4">Diğer ülkelerin iç işlerine müdahale edebilir veya müttefiklerinizi destekleyebilirsiniz:</p>
-              <ul className="list-disc pl-6 space-y-2">
-                <li><strong>Ajan Yerleştirme:</strong> Hedef ülkeye ajan sızdırarak istihbarat toplayabilir ve gizli operasyonlar düzenleyebilirsiniz.</li>
-                <li><strong>Muhalifleri Destekleme:</strong> Ajanlarınız aracılığıyla hedef ülkede iç savaş çıkarma riskini artırabilirsiniz.</li>
-                <li><strong>Suikast:</strong> Hedef ülkenin liderine suikast düzenleyerek yönetimi değiştirebilir ve ülkeyi kaosa sürükleyebilirsiniz.</li>
-                <li><strong>Müttefik Desteği:</strong> İttifak kurduğunuz ülkelere ekonomik, askeri ve teknolojik destek sağlayarak onları güçlendirebilirsiniz.</li>
-              </ul>
+              <h2 className="text-2xl font-bold text-purple-400 mb-4">4. Gizli Operasyonlar</h2>
+              <p>Ajanlarınızı kullanarak casusluk yapın, yaptırım uygulayın veya düşman liderlerine suikast düzenleyin.</p>
             </section>
-
             <section className="bg-slate-800/50 p-6 rounded-2xl border border-slate-700">
-              <h2 className="text-2xl font-bold text-emerald-400 mb-4 flex items-center gap-2"><Activity /> 5. Kazanma ve Kaybetme</h2>
-              <ul className="list-disc pl-6 space-y-2">
-                <li><strong>Zafer:</strong> 20. turun sonuna kadar İstikrarınızı 0'ın üstünde tutmayı başarırsanız oyunu kazanırsınız.</li>
-                <li><strong>Mağlubiyet:</strong> İstikrarınız 0 veya altına düşerse hükümetiniz düşer ve oyunu kaybedersiniz.</li>
-              </ul>
+              <h2 className="text-2xl font-bold text-emerald-400 mb-4">5. Kazanma ve Kaybetme</h2>
+              <p>Tur sonuna kadar istikrarı koruyun; aksi takdirde hükümetiniz düşer.</p>
             </section>
           </div>
         </div>
@@ -932,69 +1682,94 @@ export default function App() {
   if (appState === 'select_country') {
     return (
       <div className="min-h-screen bg-slate-900 flex flex-col font-sans text-white relative">
-        <div className="p-8 text-center bg-slate-800/80 border-b border-slate-700 shadow-lg z-10">
-          <h2 className="text-4xl font-black text-indigo-400 mb-2">Ülkenizi Seçin</h2>
-          <p className="text-slate-300 text-lg">Korumak ve yönetmek istediğiniz ülkeyi haritadan seçin.</p>
+        <div className="p-8 text-center bg-slate-800/80 border-b border-slate-700 shadow-lg z-10 flex items-center justify-between">
+          <button 
+            onClick={() => setAppState('menu')}
+            className="bg-slate-700 hover:bg-slate-600 text-white px-6 py-2 rounded-full font-bold transition-colors flex items-center gap-2"
+          >
+            <ArrowLeft size={20} /> Ana Menü
+          </button>
+          <div>
+            <h2 className="text-4xl font-black text-indigo-400 mb-2">Ülkenizi Seçin</h2>
+            <p className="text-slate-300 text-lg">Korumak ve yönetmek istediğiniz ülkeyi haritadan seçin.</p>
+          </div>
+          <div className="w-24"></div> {/* Spacer for centering */}
         </div>
-        <div className="flex-1 relative flex flex-col overflow-hidden">
-          {countriesData.length > 0 ? (
-            <Globe 
-              countries={countriesData}
-              selectedCountryId={selectedCountry?.id || null}
-              onSelectCountry={(country) => {
-                setSelectedCountry(country);
-              }}
-              getCountryFill={(c) => c.id === selectedCountry?.id ? '#4f46e5' : '#1f2937'}
-              getFlag={getFlag}
-              threats={[]}
-              units={[]}
-            />
-          ) : (
-            <div className="absolute inset-0 flex items-center justify-center text-slate-500 animate-pulse">
-              Dünya haritası yükleniyor...
+        <div className="flex-1 relative flex overflow-hidden">
+          <div className="flex-1 relative">
+            {countriesData.length > 0 ? (
+              <Globe 
+                selectedCountryId={selectedCountry?.id || null}
+                onSelectCountry={(country) => {
+                  setSelectedCountry(country);
+                }}
+                getCountryFill={getCountryFill}
+                getFlag={(name, metadata) => getFlag(name, metadata as unknown as CountryMetadata)}
+                countryMetadata={countryMetadata}
+                threats={[]}
+                units={[]}
+                worldState={gameState.worldState}
+                mapMode={gameState.mapMode}
+              />
+            ) : (
+              <div className="absolute inset-0 flex items-center justify-center text-slate-500 animate-pulse">
+                Dünya haritası yükleniyor...
+              </div>
+            )}
+          </div>
+
+          {/* Country Details Panel */}
+          {selectedCountry && (
+            <div className="w-96 bg-gray-900 border-l border-gray-700 p-6 flex flex-col z-10">
+              <div className="text-8xl mb-6 text-center">{getFlag(selectedCountry?.name || '', countryMetadata)}</div>
+              <h2 className="text-4xl font-bold mb-6 text-white text-center">{selectedCountry?.name || 'Bilinmiyor'}</h2>
+              
+              <div className="space-y-4 mb-8">
+                <div className="bg-gray-800 p-4 rounded-xl border border-gray-700">
+                  <span className="text-gray-400 text-xs uppercase block mb-1">Lider</span>
+                  <span className="text-white font-semibold text-lg">{getCountryState(selectedCountry?.id || selectedCountry?.properties?.name || '', selectedCountry?.name || '')?.leader || 'Bilinmiyor'}</span>
+                </div>
+                <div className="bg-gray-800 p-4 rounded-xl border border-gray-700">
+                  <span className="text-gray-400 text-xs uppercase block mb-1">Başkent</span>
+                  <span className="text-white font-semibold text-lg">{getCountryState(selectedCountry?.id || selectedCountry?.properties?.name || '', selectedCountry?.name || '')?.capital || 'Bilinmiyor'}</span>
+                </div>
+                <div className="bg-gray-800 p-4 rounded-xl border border-gray-700">
+                  <span className="text-gray-400 text-xs uppercase block mb-1">Resmi Dil</span>
+                  <span className="text-white font-semibold text-lg">{getCountryState(selectedCountry?.id || selectedCountry?.properties?.name || '', selectedCountry?.name || '')?.language || 'Bilinmiyor'}</span>
+                </div>
+                <div className="bg-gray-800 p-4 rounded-xl border border-gray-700">
+                  <span className="text-gray-400 text-xs uppercase block mb-1">Nüfus</span>
+                  <span className="text-white font-semibold text-lg">{getCountryState(selectedCountry?.id || selectedCountry?.properties?.name || '', selectedCountry?.name || '')?.population?.toLocaleString() || 'Bilinmiyor'}</span>
+                </div>
+                <div className="bg-gray-800 p-4 rounded-xl border border-gray-700">
+                  <span className="text-gray-400 text-xs uppercase block mb-1">GSYİH</span>
+                  <span className="text-white font-semibold text-lg">{getCountryState(selectedCountry?.id || selectedCountry?.properties?.name || '', selectedCountry?.name || '')?.gdp?.toLocaleString() || 'Bilinmiyor'}</span>
+                </div>
+              </div>
+
+              <button 
+                onClick={() => {
+                  if (!selectedCountry) return;
+                  setPlayerCountry(selectedCountry);
+                  setAppState('playing');
+                  setGameState(prev => ({
+                    ...prev,
+                    logs: [`${selectedCountry.name} yönetimi devralındı. Ülkemizi dış tehditlere karşı korumalıyız!`]
+                  }));
+                }}
+                className="bg-indigo-600 hover:bg-indigo-500 text-white px-6 py-4 rounded-xl font-bold transition-colors flex items-center justify-center gap-2 mt-auto text-lg"
+              >
+                <Shield size={24} /> Onayla ve Başla
+              </button>
             </div>
           )}
         </div>
-
-        {/* Confirmation Modal */}
-        {selectedCountry && (
-          <div className="absolute inset-0 z-50 bg-black/80 flex items-center justify-center backdrop-blur-sm">
-            <div className="bg-gray-800 p-8 rounded-2xl border border-gray-700 max-w-md text-center shadow-2xl">
-              <div className="text-6xl mb-4">{getFlag(selectedCountry.name)}</div>
-              <h2 className="text-3xl font-bold mb-2 text-white">{selectedCountry.name}</h2>
-              <p className="text-gray-300 mb-8">
-                Bu ülkenin yönetimini devralmak istediğinize emin misiniz?
-              </p>
-              <div className="flex gap-4 justify-center">
-                <button 
-                  onClick={() => setSelectedCountry(null)}
-                  className="bg-gray-700 hover:bg-gray-600 text-white px-6 py-3 rounded-xl font-bold transition-colors"
-                >
-                  İptal
-                </button>
-                <button 
-                  onClick={() => {
-                    setPlayerCountry(selectedCountry);
-                    setAppState('playing');
-                    setGameState(prev => ({
-                      ...prev,
-                      logs: [`${selectedCountry.name} yönetimi devralındı. Ülkemizi dış tehditlere karşı korumalıyız!`]
-                    }));
-                  }}
-                  className="bg-indigo-600 hover:bg-indigo-500 text-white px-6 py-3 rounded-xl font-bold transition-colors flex items-center gap-2"
-                >
-                  <Shield size={20} /> Onayla ve Başla
-                </button>
-              </div>
-            </div>
-          </div>
-        )}
       </div>
     );
   }
 
   return (
-    <div className="min-h-screen flex flex-col font-sans relative">
+    <div className="h-screen flex flex-col font-sans relative overflow-hidden">
       {/* Pause Menu Overlay */}
       {isPaused && (
         <div className="absolute inset-0 z-50 bg-black/80 flex items-center justify-center backdrop-blur-sm">
@@ -1008,499 +1783,175 @@ export default function App() {
             </button>
             <button 
               onClick={() => {
+                saveGame('manual');
+                setAppState('saves');
                 setIsPaused(false);
+              }}
+              className="bg-gray-800 hover:bg-gray-700 border border-gray-600 text-white px-6 py-4 rounded-xl font-bold transition-colors flex items-center justify-center gap-2"
+            >
+              <ListOrdered size={20} /> Kayıtlar
+            </button>
+            <button 
+              onClick={() => {
+                saveGame('manual');
                 setAppState('menu');
-                // Reset game state if needed, or keep it to resume later
+                setIsPaused(false);
               }}
               className="bg-gray-800 hover:bg-gray-700 border border-gray-600 text-white px-6 py-4 rounded-xl font-bold transition-colors flex items-center justify-center gap-2"
             >
               <Home size={20} /> Ana Menüye Dön
             </button>
+            <button 
+              onClick={() => {
+                setPlayerCountry(null);
+                setGameState(prev => ({
+                  turn: 1,
+                  maxTurns: 20,
+                  resources: { ...initialResources },
+                  threats: [],
+                  units: [],
+                  logs: ['Oyun başladı. Dünyayı yönetme sırası sizde.'],
+                  mapMode: 'political',
+                  gameOver: false,
+                  victory: false,
+                  worldState: prev.worldState,
+                }));
+                setAppState('select_country');
+                setIsPaused(false);
+              }}
+              className="bg-red-900 hover:bg-red-800 border border-red-700 text-white px-6 py-4 rounded-xl font-bold transition-colors flex items-center justify-center gap-2"
+            >
+              <RefreshCw size={20} /> Yeni Oyuna Başla
+            </button>
           </div>
         </div>
       )}
-
-      {/* Header / Top Bar */}
-      <header className="bg-gray-900 border-b border-gray-800 p-4 flex justify-between items-center shadow-md z-10">
-        <div className="flex items-center gap-4">
-          <h1 className="text-2xl font-black text-transparent bg-clip-text bg-gradient-to-r from-indigo-400 to-purple-400 tracking-tight">
-            GLOBAL DEFENSE
-          </h1>
-          {playerCountry && (
-            <div className="flex items-center gap-2 bg-indigo-900/50 border border-indigo-500/30 px-3 py-1 rounded-full text-indigo-200 text-sm font-medium">
-              <Home size={14} /> {playerCountry.name}
-            </div>
-          )}
-          <div className="bg-gray-800 px-4 py-1.5 rounded-full border border-gray-700 flex items-center gap-2">
-            <span className="text-gray-400 text-sm font-medium">TUR</span>
-            <span className="text-white font-bold">{gameState.turn}</span>
-          </div>
-          
-          {/* Auto-Play Controls */}
-          <div className="flex items-center gap-2 bg-gray-800 px-3 py-1.5 rounded-full border border-gray-700">
-            <button 
-              onClick={() => setAutoPlay(!autoPlay)} 
-              className={`transition-colors ${autoPlay ? 'text-green-400 hover:text-green-300' : 'text-gray-400 hover:text-white'}`}
-              title={autoPlay ? "Otomatik Turu Durdur" : "Otomatik Turu Başlat"}
-            >
-              {autoPlay ? <Pause size={18} /> : <Play size={18} />}
-            </button>
-            <div className="w-px h-4 bg-gray-700 mx-1"></div>
-            <Clock size={14} className="text-gray-500" />
-            <select 
-              value={gameSpeed} 
-              onChange={e => setGameSpeed(Number(e.target.value))} 
-              className="bg-transparent text-white text-sm outline-none cursor-pointer"
-            >
-              <option value={3000} className="bg-gray-800">Yavaş</option>
-              <option value={1500} className="bg-gray-800">Normal</option>
-              <option value={500} className="bg-gray-800">Hızlı</option>
-            </select>
-          </div>
-        </div>
-        
-        <div className="flex gap-6">
-          <ResourceItem icon={<Coins size={20} className="text-yellow-400" />} label="Bütçe" value={gameState.resources.budget} />
-          <ResourceItem icon={<Activity size={20} className="text-blue-400" />} label="İstihbarat" value={gameState.resources.intelligence} />
-          <ResourceItem icon={<Crosshair size={20} className="text-red-400" />} label="Askeri Güç" value={gameState.resources.military} />
-          <ResourceItem icon={<Users size={20} className="text-green-400" />} label="İstikrar" value={gameState.resources.stability} />
-        </div>
-
-        <button 
-          onClick={nextTurn}
-          disabled={gameState.gameOver || gameState.victory}
-          className="bg-indigo-600 hover:bg-indigo-700 text-white px-6 py-2 rounded-lg font-medium transition-colors flex items-center gap-2 disabled:opacity-50"
-        >
-          Turu Bitir <ChevronRight size={18} />
-        </button>
-      </header>
-
+      <Header 
+        playerCountry={playerCountry}
+        gameState={gameState}
+        autoPlay={autoPlay}
+        setAutoPlay={setAutoPlay}
+        gameSpeed={gameSpeed}
+        setGameSpeed={setGameSpeed}
+        nextTurn={nextTurn}
+      />
       <div className="flex flex-1 overflow-hidden">
-        {/* Left Sidebar: Event Log */}
-        <aside className="w-80 bg-gray-950 border-r border-gray-800 flex flex-col shadow-2xl z-10">
-          <div className="flex-1 p-5 overflow-y-auto">
-            <h3 className="text-xs font-bold text-gray-500 uppercase tracking-widest mb-4 sticky top-0 bg-gray-950 pb-2 z-10">Olay Günlüğü</h3>
-            <div className="space-y-3 font-mono text-xs">
-              {gameState.logs.map((log, i) => (
-                <div key={i} className={`
-                  ${log.includes('[Kritik]') ? 'text-red-400' : 
-                    log.includes('[Uyarı]') ? 'text-yellow-400' : 
-                    log.includes('[Birlik]') ? 'text-blue-400' :
-                    log.includes('[Başarı]') ? 'text-green-400' :
-                    log.includes('[Diplomasi]') ? 'text-purple-400' :
-                    log.includes('[SAVAŞ]') ? 'text-orange-400' : 'text-gray-400'} 
-                  border-l-2 
-                  ${log.includes('[Kritik]') ? 'border-red-500' : 
-                    log.includes('[Uyarı]') ? 'border-yellow-500' : 
-                    log.includes('[Birlik]') ? 'border-blue-500' :
-                    log.includes('[Başarı]') ? 'border-green-500' :
-                    log.includes('[Diplomasi]') ? 'border-purple-500' :
-                    log.includes('[SAVAŞ]') ? 'border-orange-500' : 'border-gray-700'} 
-                  pl-3 py-1 bg-gray-900/50 rounded-r
-                `}>
-                  {log}
-                </div>
-              ))}
-            </div>
-          </div>
-        </aside>
-
-        {/* Main Game Area (SVG Map) */}
-        <main className="flex-1 relative overflow-hidden bg-slate-900 flex flex-col">
-          
-          {/* Map Mode Toggles */}
-          <div className="absolute top-4 left-4 z-20 flex flex-col gap-2">
-            <div className="flex gap-2 bg-gray-800/80 p-2 rounded-lg backdrop-blur-sm border border-gray-700">
-              <button 
-                onClick={() => setGameState(p => ({...p, mapMode: 'political'}))}
-                className={`p-2 rounded ${gameState.mapMode === 'political' ? 'bg-indigo-600 text-white' : 'text-gray-400 hover:bg-gray-700'}`}
-                title="Politik Harita"
-              ><MapIcon size={20} /></button>
-              <button 
-                onClick={() => setGameState(p => ({...p, mapMode: 'threat'}))}
-                className={`p-2 rounded ${gameState.mapMode === 'threat' ? 'bg-red-600 text-white' : 'text-gray-400 hover:bg-gray-700'}`}
-                title="Tehdit Haritası"
-              ><AlertTriangle size={20} /></button>
-              <button 
-                onClick={() => setGameState(p => ({...p, mapMode: 'military'}))}
-                className={`p-2 rounded ${gameState.mapMode === 'military' ? 'bg-blue-600 text-white' : 'text-gray-400 hover:bg-gray-700'}`}
-                title="Askeri Harita"
-              ><Swords size={20} /></button>
-              <button 
-                onClick={() => setGameState(p => ({...p, mapMode: 'wars'}))}
-                className={`p-2 rounded ${gameState.mapMode === 'wars' ? 'bg-orange-600 text-white' : 'text-gray-400 hover:bg-gray-700'}`}
-                title="Savaş Haritası"
-              ><Crosshair size={20} /></button>
-              <button 
-                onClick={() => setGameState(p => ({...p, mapMode: 'events'}))}
-                className={`p-2 rounded ${gameState.mapMode === 'events' ? 'bg-yellow-600 text-white' : 'text-gray-400 hover:bg-gray-700'}`}
-                title="Olaylar Haritası"
-              ><Activity size={20} /></button>
-            </div>
-            <div className="flex gap-2 bg-gray-800/80 p-2 rounded-lg backdrop-blur-sm border border-gray-700">
-              <button 
-                onClick={() => setShowThreats(!showThreats)}
-                className={`p-2 rounded ${showThreats ? 'bg-red-600 text-white' : 'text-gray-400 hover:bg-gray-700'}`}
-                title="Tehdit Göstergelerini Aç/Kapat"
-              ><AlertTriangle size={20} /></button>
-              <button 
-                onClick={() => setShowUnits(!showUnits)}
-                className={`p-2 rounded ${showUnits ? 'bg-blue-600 text-white' : 'text-gray-400 hover:bg-gray-700'}`}
-                title="Birlik Göstergelerini Aç/Kapat"
-              ><Shield size={20} /></button>
-            </div>
-          </div>
-
-          {(gameState.gameOver || gameState.victory) && (
-            <div className="absolute inset-0 z-50 bg-black/80 flex items-center justify-center backdrop-blur-sm">
-              <div className="bg-gray-800 p-8 rounded-2xl border border-gray-700 max-w-md text-center shadow-2xl">
-                <h2 className={`text-3xl font-bold mb-4 ${gameState.victory ? 'text-green-400' : 'text-red-500'}`}>
-                  {gameState.victory ? 'Zafer!' : 'Oyun Bitti!'}
-                </h2>
-                <p className="text-gray-300 mb-8">
-                  {gameState.victory 
-                    ? 'Türkiye 20 tur boyunca tüm krizlere rağmen ayakta kaldı. Liderliğiniz tarihe geçti.' 
-                    : 'Ülke istikrarını kaybetti ve çöktü. Tarih sizi affetmeyecek.'}
-                </p>
-                <button 
-                  onClick={restartGame}
-                  className="bg-white text-gray-900 hover:bg-gray-200 px-6 py-3 rounded-xl font-bold transition-colors flex items-center gap-2 mx-auto"
-                >
-                  <RefreshCw size={20} /> Yeniden Başla
-                </button>
-              </div>
-            </div>
-          )}
-
-          <div className="flex-1 w-full h-full p-8 flex items-center justify-center">
-            {countriesData.length > 0 ? (
-              <Globe 
-                countries={countriesData}
-                selectedCountryId={selectedCountry?.id || null}
-                playerCountryId={playerCountry?.id || null}
-                onSelectCountry={setSelectedCountry}
-                getCountryFill={getCountryFill}
-                getFlag={getFlag}
-                threats={gameState.threats}
-                units={gameState.units}
-                showThreats={showThreats}
-                showUnits={showUnits}
-              />
-            ) : (
-              <div className="text-gray-500 animate-pulse">Dünya haritası yükleniyor...</div>
-            )}
-          </div>
-        </main>
-
-        {/* Sidebar */}
-        <aside className="w-96 bg-gray-900 border-l border-gray-700 flex flex-col z-10 shadow-2xl">
-          <div className="flex border-b border-gray-800">
-            <button 
-              onClick={() => setSidebarTab('region')}
-              className={`flex-1 py-3 text-sm font-bold uppercase tracking-widest transition-colors ${sidebarTab === 'region' ? 'bg-indigo-600 text-white' : 'text-gray-400 hover:bg-gray-800'}`}
-            >
-              Durum
-            </button>
-            <button 
-              onClick={() => setSidebarTab('diplomacy')}
-              className={`flex-1 py-3 text-sm font-bold uppercase tracking-widest transition-colors ${sidebarTab === 'diplomacy' ? 'bg-indigo-600 text-white' : 'text-gray-400 hover:bg-gray-800'}`}
-            >
-              Eylemler
-            </button>
-          </div>
-          
-          <div className="p-6 flex-1 overflow-y-auto bg-gray-800/50">
-            {selectedCountry ? (
-              <>
-                <div className="flex items-center justify-between mb-6">
-                  <h2 className="text-2xl font-bold flex items-center gap-3 text-white">
-                    <span className="text-3xl">{getFlag(selectedCountry.name)}</span>
-                    {selectedCountry.name}
-                  </h2>
-                </div>
-                
-                {(() => {
-                  const countryState = gameState.worldState[selectedCountry.id || selectedCountry.name];
-                  const isOwnedByPlayer = countryState?.ownerId === playerCountry?.id;
-                  const ownerState = gameState.worldState[countryState?.ownerId || ''];
-                  const isAlly = countryState?.allies.includes(playerCountry?.id || '');
-                  const isEnemy = countryState?.enemies.includes(playerCountry?.id || '');
-
-                  if (sidebarTab === 'region') {
-                    return (
-                      <>
-                        <div className="mb-6 bg-gray-900/50 p-4 rounded-xl border border-gray-700">
-                          <div className="flex justify-between items-center mb-4">
-                            <h3 className="text-xs font-bold text-gray-400 uppercase tracking-widest">Ülke Durumu</h3>
-                            <span className="text-xs font-bold px-2 py-1 rounded bg-gray-800 text-gray-300 border border-gray-700">
-                              Sahibi: {getFlag(ownerState?.name || '')} {ownerState?.name || 'Bilinmiyor'}
-                            </span>
-                          </div>
-                          
-                          <div className="grid grid-cols-2 gap-2 mb-4 text-sm">
-                            <div className="bg-gray-800 p-2 rounded border border-gray-700">
-                              <span className="text-gray-400 block text-xs">Lider</span>
-                              <span className="text-white font-semibold">{countryState?.leader || 'Bilinmiyor'}</span>
-                            </div>
-                            <div className="bg-gray-800 p-2 rounded border border-gray-700">
-                              <span className="text-gray-400 block text-xs">Yönetim Biçimi</span>
-                              <span className="text-white font-semibold">{countryState?.governmentType || 'Bilinmiyor'}</span>
-                            </div>
-                            <div className="bg-gray-800 p-2 rounded border border-gray-700">
-                              <span className="text-gray-400 block text-xs">Başkent</span>
-                              <span className="text-white font-semibold">{countryState?.capital || 'Bilinmiyor'}</span>
-                            </div>
-                            <div className="bg-gray-800 p-2 rounded border border-gray-700">
-                              <span className="text-gray-400 block text-xs">Dil</span>
-                              <span className="text-white font-semibold">{countryState?.language || 'Bilinmiyor'}</span>
-                            </div>
-                          </div>
-
-                          <div className="bg-gray-800 p-3 rounded border border-gray-700 mb-4 flex items-center justify-between">
-                            <div>
-                              <span className="text-gray-400 block text-xs mb-1">Ekonomik Güç Çarpanı</span>
-                              <div className="flex items-center gap-2">
-                                <Coins size={16} className="text-yellow-400" />
-                                <span className="text-white font-bold text-lg">{countryState?.economy || 0}</span>
-                              </div>
-                            </div>
-                            <div className="text-right">
-                              <span className="text-gray-400 block text-xs mb-1">Küresel Sıra</span>
-                              <span className="text-yellow-400 font-bold">#{getCountryRank(countryState?.id || '', 'economy')}</span>
-                            </div>
-                          </div>
-
-                          <div className="grid grid-cols-3 gap-2 mb-4">
-                            <div className="bg-gray-800 p-2 rounded text-center border border-gray-700">
-                              <div className="text-blue-400 text-xs font-bold flex items-center justify-center gap-1"><Zap size={12}/> Teknoloji</div>
-                              <div className="text-white font-mono text-lg">{countryState?.technology || 0}</div>
-                              <div className="text-gray-500 text-[10px] mt-1">Sıra: #{getCountryRank(countryState?.id || '', 'technology')}</div>
-                            </div>
-                            <div className="bg-gray-800 p-2 rounded text-center border border-gray-700">
-                              <div className="text-green-400 text-xs font-bold flex items-center justify-center gap-1"><Wheat size={12}/> Tarım</div>
-                              <div className="text-white font-mono text-lg">{countryState?.agriculture || 0}</div>
-                              <div className="text-gray-500 text-[10px] mt-1">Sıra: #{getCountryRank(countryState?.id || '', 'agriculture')}</div>
-                            </div>
-                            <div className="bg-gray-800 p-2 rounded text-center border border-gray-700">
-                              <div className="text-red-400 text-xs font-bold flex items-center justify-center gap-1"><Swords size={12}/> Ordu</div>
-                              <div className="text-white font-mono text-lg">{Math.floor(countryState?.army || 0)}</div>
-                              <div className="text-gray-500 text-[10px] mt-1">Sıra: #{getCountryRank(countryState?.id || '', 'army')}</div>
-                            </div>
-                          </div>
-
-                        </div>
-                      </>
-                    );
-                  }
-
-                  if (sidebarTab === 'diplomacy') {
-                    return (
-                      <>
-                        {/* Threats Actions */}
-                        <div className="mb-6">
-                          <div className="flex items-center gap-2 mb-3 text-red-400">
-                            <AlertTriangle size={16} /> <span className="font-semibold text-sm">Aktif Tehditlere Müdahale</span>
-                          </div>
-                          {gameState.threats.filter(t => t.countryId === (selectedCountry.id || selectedCountry.name)).length === 0 ? (
-                            <p className="text-gray-500 text-sm italic pl-6">Tehdit bulunmuyor.</p>
-                          ) : (
-                            <div className="space-y-2 pl-6">
-                              {gameState.threats.filter(t => t.countryId === (selectedCountry.id || selectedCountry.name)).map(threat => {
-                                let cost = 0;
-                                let reqSpies = 0;
-                                let actionName = 'Müdahale Et';
-                                if (threat.type === 'Ekonomi') { cost = 100; actionName = 'Ekonomik Krizi Çöz'; }
-                                else if (threat.type === 'Terörizm') { cost = 150; actionName = 'Terörizmi Bastır'; }
-                                else if (threat.type === 'İç Karışıklık' || threat.type === 'İç Savaş') { cost = 200; reqSpies = 1; actionName = 'İsyanı Bastır'; }
-                                else if (threat.type === 'Suikast') { cost = 50; reqSpies = 1; actionName = 'Suikasti Engelle'; }
-                                else if (threat.type === 'Savaş') { cost = 300; actionName = 'Savaşı Durdur'; }
-
-                                const canAfford = gameState.resources.budget >= cost;
-                                const hasSpies = reqSpies === 0 || (countryState?.spies || 0) >= reqSpies;
-                                const canAct = canAfford && hasSpies;
-
-                                return (
-                                  <div key={threat.id} className="flex flex-col gap-2 bg-red-950/30 p-3 rounded border border-red-900/50">
-                                    <div className="flex justify-between items-center">
-                                      <span className="text-sm text-red-200 font-bold">{threat.type} (Şiddet: {threat.severity})</span>
-                                      <span className="text-xs font-mono bg-red-900 text-red-100 px-1.5 py-0.5 rounded">{threat.turnsLeft} Tur</span>
-                                    </div>
-                                    <button
-                                      onClick={() => handleCounterThreat(threat.id, threat.type, selectedCountry.id || selectedCountry.name)}
-                                      disabled={!canAct}
-                                      className={`text-xs py-1.5 px-2 rounded font-bold flex items-center justify-center gap-1 transition-colors ${canAct ? 'bg-indigo-600 hover:bg-indigo-500 text-white' : 'bg-gray-700 text-gray-500 cursor-not-allowed'}`}
-                                      title={!canAfford ? 'Yetersiz Bütçe' : !hasSpies ? 'Yetersiz Ajan' : ''}
-                                    >
-                                      <Shield size={12} /> {actionName} ({cost} Bütçe{reqSpies > 0 ? `, ${reqSpies} Ajan` : ''})
-                                    </button>
-                                  </div>
-                                );
-                              })}
-                            </div>
-                          )}
-                        </div>
-
-                        <div>
-                          <h3 className="text-xs font-bold text-gray-400 uppercase tracking-widest mb-4">Eylemler</h3>
-                          
-                          {isOwnedByPlayer ? (
-                            <div className="space-y-3">
-                              <ActionButton 
-                                title="Teknoloji Geliştir" 
-                                cost="100 Bütçe" 
-                                effect="Savaş gücünü %10 artırır."
-                                icon={<Zap size={18} />}
-                                onClick={() => upgradeCountry('technology')}
-                                disabled={gameState.resources.budget < 100}
-                              />
-                              <ActionButton 
-                                title="Tarım Geliştir" 
-                                cost="50 Bütçe" 
-                                effect="Tur başına +5 Bütçe ve ordu büyümesi sağlar."
-                                icon={<Wheat size={18} />}
-                                onClick={() => upgradeCountry('agriculture')}
-                                disabled={gameState.resources.budget < 50}
-                              />
-                              <ActionButton 
-                                title="Ordu Büyüt" 
-                                cost="30 Bütçe" 
-                                effect="+1000 Asker ekler."
-                                icon={<Swords size={18} />}
-                                onClick={() => upgradeCountry('army')}
-                                disabled={gameState.resources.budget < 30}
-                              />
-                            </div>
-                          ) : (
-                            <div className="space-y-3">
-                              <h4 className="text-[10px] font-bold text-gray-500 uppercase tracking-widest border-b border-gray-800 pb-1 mb-2">Diplomasi</h4>
-                              {!isAlly && !isEnemy && (
-                                <ActionButton 
-                                  title="İttifak Kur" 
-                                  cost="Ücretsiz" 
-                                  effect="Saldırmazlık anlaşması imzalar."
-                                  icon={<Handshake size={18} />}
-                                  onClick={() => handleDiplomacy('alliance', selectedCountry.id || selectedCountry.name)}
-                                  disabled={false}
-                                />
-                              )}
-                              {!isEnemy && (
-                                <ActionButton 
-                                  title="Savaş İlan Et" 
-                                  cost="Ücretsiz" 
-                                  effect="Ordularınız çatışmaya başlar."
-                                  icon={<Crosshair size={18} className="text-red-400" />}
-                                  onClick={() => handleDiplomacy('war', selectedCountry.id || selectedCountry.name)}
-                                  disabled={false}
-                                />
-                              )}
-
-                              {isAlly && (
-                                <div className="bg-gray-900/80 p-4 rounded-xl border border-blue-900/50 mb-4">
-                                  <h4 className="text-xs font-bold text-blue-400 uppercase tracking-widest mb-3 flex items-center gap-2">
-                                    <Handshake size={14} /> Müttefik Desteği
-                                  </h4>
-                                  <div className="space-y-3">
-                                    <ActionButton 
-                                      title="Ekonomik Destek" 
-                                      cost="100 Bütçe" 
-                                      effect="Müttefikin tarımını geliştirir."
-                                      icon={<Coins size={18} className="text-yellow-400" />}
-                                      onClick={() => handleAllySupport('economy', selectedCountry.id || selectedCountry.name)}
-                                      disabled={gameState.resources.budget < 100}
-                                    />
-                                    <ActionButton 
-                                      title="Askeri Destek" 
-                                      cost="150 Bütçe" 
-                                      effect="Müttefike +2000 asker gönderir."
-                                      icon={<Shield size={18} className="text-blue-400" />}
-                                      onClick={() => handleAllySupport('military', selectedCountry.id || selectedCountry.name)}
-                                      disabled={gameState.resources.budget < 150}
-                                    />
-                                    <ActionButton 
-                                      title="Teknoloji Paylaşımı" 
-                                      cost="300 Bütçe" 
-                                      effect="Müttefikin teknolojisini geliştirir."
-                                      icon={<Zap size={18} className="text-indigo-400" />}
-                                      onClick={() => handleAllySupport('tech', selectedCountry.id || selectedCountry.name)}
-                                      disabled={gameState.resources.budget < 300}
-                                    />
-                                  </div>
-                                </div>
-                              )}
-
-                              {!isAlly && (
-                                <div className="bg-gray-900/80 p-4 rounded-xl border border-purple-900/50 mb-4">
-                                  <h4 className="text-xs font-bold text-purple-400 uppercase tracking-widest mb-3 flex items-center gap-2">
-                                    <Eye size={14} /> Gizli Operasyonlar
-                                  </h4>
-                                  <div className="space-y-3">
-                                    <ActionButton 
-                                      title="Ajan Yerleştir" 
-                                      cost="50 Bütçe" 
-                                      effect="Ülkeye bir ajan yerleştirir."
-                                      icon={<Eye size={18} className="text-purple-400" />}
-                                      onClick={() => handleCovertAction('spy', selectedCountry.id || selectedCountry.name)}
-                                      disabled={gameState.resources.budget < 50}
-                                    />
-                                    <ActionButton 
-                                      title="İstihbarat Topla" 
-                                      cost="20 Bütçe" 
-                                      effect="İstihbarat seviyesini artırır. (Ajan gerektirir)"
-                                      icon={<Activity size={18} className="text-blue-400" />}
-                                      onClick={() => handleCovertAction('intel', selectedCountry.id || selectedCountry.name)}
-                                      disabled={gameState.resources.budget < 20 || (countryState?.spies || 0) < 1}
-                                    />
-                                    <ActionButton 
-                                      title="Ekonomik Yaptırım" 
-                                      cost="100 Bütçe" 
-                                      effect="Ülkenin tarım gelirini düşürür."
-                                      icon={<AlertTriangle size={18} className="text-orange-400" />}
-                                      onClick={() => handleCovertAction('sanction', selectedCountry.id || selectedCountry.name)}
-                                      disabled={gameState.resources.budget < 100}
-                                    />
-                                    <ActionButton 
-                                      title="Muhalifleri Destekle" 
-                                      cost="200 Bütçe" 
-                                      effect="İç savaş riskini artırır. (Ajan gerektirir)"
-                                      icon={<Users size={18} className="text-red-400" />}
-                                      onClick={() => handleCovertAction('rebel', selectedCountry.id || selectedCountry.name)}
-                                      disabled={gameState.resources.budget < 200 || (countryState?.spies || 0) < 1}
-                                    />
-                                    <ActionButton 
-                                      title="Suikast Düzenle" 
-                                      cost="500 Bütçe" 
-                                      effect="Lideri değiştirir, istikrarı bozar. (2 Ajan gerektirir)"
-                                      icon={<Crosshair size={18} className="text-red-600" />}
-                                      onClick={() => handleCovertAction('assassinate', selectedCountry.id || selectedCountry.name)}
-                                      disabled={gameState.resources.budget < 500 || (countryState?.spies || 0) < 2}
-                                    />
-                                  </div>
-                                </div>
-                              )}
-                            </div>
-                          )}
-                        </div>
-                      </>
-                    );
-                  }
-                  return null;
-                })()}
-              </>
-            ) : (
-              <div className="h-full flex flex-col items-center justify-center text-gray-600">
-                <MapIcon size={64} className="mb-6 opacity-20" />
-                <p className="text-center text-lg font-medium">Emir vermek için<br/>haritadan bir ülke seçin.</p>
-              </div>
-            )}
-          </div>
-
-        </aside>
+        <EventLogSidebar logs={gameState.logs} />
+        <MainGameArea 
+          gameState={gameState}
+          setGameState={setGameState}
+          showRankings={showRankings}
+          setShowRankings={setShowRankings}
+          showThreats={showThreats}
+          setShowThreats={setShowThreats}
+          showUnits={showUnits}
+          setShowUnits={setShowUnits}
+          selectedCountry={selectedCountry}
+          rankingsTab={rankingsTab}
+          setRankingsTab={setRankingsTab}
+          countriesData={countriesData}
+          getCountryFill={getCountryFill}
+          getFlag={getFlag}
+          countryMetadata={countryMetadata}
+          onSelectCountry={setSelectedCountry}
+        />
+        <ActionSidebar 
+          key={JSON.stringify(gameState.worldState[selectedCountry?.id || ''] || {})}
+          sidebarTab={sidebarTab}
+          setSidebarTab={setSidebarTab}
+          actionsSubTab={actionsSubTab}
+          setActionsSubTab={setActionsSubTab}
+          selectedCountry={selectedCountry}
+          gameState={gameState}
+          countryState={countryState}
+          getCountryRank={getCountryRank}
+          handleCounterThreat={handleCounterThreat}
+          upgradeCountry={upgradeCountry}
+          handleDiplomacy={handleDiplomacy}
+          handleAllySupport={handleAllySupport}
+          handleCovertAction={handleCovertAction}
+          isOwnedByPlayer={isOwnedByPlayer}
+          isAlly={isAlly}
+          isEnemy={isEnemy}
+        />
       </div>
-    </div>
+
+
+
+
+
+
+
+
+
+
+
+
+                      </div>
   );
 }
 
-function ResourceItem({ icon, label, value }: { icon: React.ReactNode, label: string, value: number }) {
+function Header({ playerCountry, gameState, autoPlay, setAutoPlay, gameSpeed, setGameSpeed, nextTurn }: any) {
+  return (
+    <header className="bg-gray-900 border-b border-gray-800 p-4 flex justify-between items-center shadow-md z-10">
+      <div className="flex items-center gap-4">
+        <h1 className="text-2xl font-black text-transparent bg-clip-text bg-gradient-to-r from-indigo-400 to-purple-400 tracking-tight">
+          GLOBAL DEFENSE
+          <span className="text-xs block text-gray-400">v{VERSION}</span>
+        </h1>
+        {playerCountry && (
+          <div className="flex items-center gap-2 bg-indigo-900/50 border border-indigo-500/30 px-3 py-1 rounded-full text-indigo-200 text-sm font-medium">
+            <Home size={14} /> {playerCountry.name}
+          </div>
+        )}
+        <div className="bg-gray-800 px-4 py-1.5 rounded-full border border-gray-700 flex items-center gap-2">
+          <span className="text-gray-400 text-sm font-medium">TUR</span>
+          <span className="text-white font-bold">{gameState.turn}</span>
+        </div>
+        
+        {/* Auto-Play Controls */}
+        <div className="flex items-center gap-2 bg-gray-800 px-3 py-1.5 rounded-full border border-gray-700">
+          <button 
+            onClick={() => setAutoPlay(!autoPlay)} 
+            className={`transition-colors ${autoPlay ? 'text-green-400 hover:text-green-300' : 'text-gray-400 hover:text-white'}`}
+            title={autoPlay ? "Otomatik Turu Durdur" : "Otomatik Turu Başlat"}
+          >
+            {autoPlay ? <Pause size={18} /> : <Play size={18} />}
+          </button>
+          <div className="w-px h-4 bg-gray-700 mx-1"></div>
+          <Clock size={14} className="text-gray-500" />
+          <select 
+            value={gameSpeed} 
+            onChange={e => setGameSpeed(Number(e.target.value))} 
+            className="bg-transparent text-white text-sm outline-none cursor-pointer"
+          >
+            <option value={3000} className="bg-gray-800">Yavaş</option>
+            <option value={1500} className="bg-gray-800">Normal</option>
+            <option value={500} className="bg-gray-800">Hızlı</option>
+          </select>
+        </div>
+      </div>
+      
+      <div className="flex gap-6">
+        <ResourceItem icon={<Coins size={20} className="text-yellow-400" />} label="Bütçe" value={gameState.resources.budget} />
+        <ResourceItem icon={<Activity size={20} className="text-blue-400" />} label="İstihbarat" value={gameState.resources.intelligence} />
+        <ResourceItem icon={<Crosshair size={20} className="text-red-400" />} label="Askeri Güç" value={gameState.resources.military} />
+        <ResourceItem icon={<Users size={20} className="text-green-400" />} label="İstikrar" value={gameState.resources.stability} />
+      </div>
+
+      <button 
+        onClick={nextTurn}
+        disabled={gameState.gameOver || gameState.victory}
+        className="bg-indigo-600 hover:bg-indigo-700 text-white px-6 py-2 rounded-lg font-medium transition-colors flex items-center gap-2 disabled:opacity-50"
+      >
+        Turu Bitir <ChevronRight size={18} />
+      </button>
+    </header>
+  );
+}
+
+function ResourceItem(props: { icon: React.ReactNode, label: string, value: number }) {
+  const { icon, label, value } = props;
   return (
     <div className="flex items-center gap-2 bg-gray-900 px-3 py-1.5 rounded-lg border border-gray-700">
       {icon}
@@ -1512,28 +1963,30 @@ function ResourceItem({ icon, label, value }: { icon: React.ReactNode, label: st
   );
 }
 
-function ActionButton({ title, cost, effect, icon, onClick, disabled }: { title: string, cost: string, effect: string, icon: React.ReactNode, onClick: () => void, disabled: boolean }) {
+function MapLegend({ mapMode }: { mapMode: MapMode }) {
+  const legends: Record<MapMode, { title: string, items: { label: string, color: string }[] }> = {
+    political: { title: 'Politik Harita', items: [{ label: 'Oyuncu', color: '#4f46e5' }, { label: 'Diğer', color: '#1f2937' }] },
+    threat: { title: 'Tehdit Seviyesi', items: [{ label: 'Yüksek', color: '#991b1b' }, { label: 'Orta', color: '#b45309' }, { label: 'Düşük', color: '#854d0e' }] },
+    military: { title: 'Askeri Güç', items: [{ label: 'Ordu Var', color: '#1e3a8a' }, { label: 'Diğer', color: '#312e81' }] },
+    wars: { title: 'Savaş Durumu', items: [{ label: 'Savaşta', color: '#ef4444' }, { label: 'Barış', color: '#1f2937' }] },
+    events: { title: 'Olaylar (Yaptırımlar)', items: [{ label: 'Yaptırım Var', color: '#eab308' }, { label: 'Sakin', color: '#1f2937' }] },
+  };
+
+  const legend = legends[mapMode];
   return (
-    <button 
-      onClick={onClick}
-      disabled={disabled}
-      className={`w-full text-left p-4 rounded-xl border transition-all flex items-start gap-3 ${
-        disabled 
-          ? 'bg-gray-800/50 border-gray-700/50 opacity-50 cursor-not-allowed' 
-          : 'bg-gray-800 border-gray-600 hover:bg-gray-700 hover:border-gray-400 shadow-lg hover:shadow-xl'
-      }`}
-    >
-      <div className={`p-2 rounded-lg ${disabled ? 'bg-gray-900 text-gray-600' : 'bg-gray-900 text-indigo-400'}`}>
-        {icon}
+    <div className="absolute bottom-4 left-4 z-20 bg-gray-800/90 p-4 rounded-xl border border-gray-700 shadow-xl">
+      <h4 className="text-white font-bold text-sm mb-2">{legend.title}</h4>
+      {mapMode === 'events' && <p className="text-xs text-gray-400 mb-2">Yaptırım uygulanan ülkeleri gösterir.</p>}
+      <div className="space-y-1">
+        {legend.items.map(item => (
+          <div key={item.label} className="flex items-center gap-2 text-xs text-gray-300">
+            <div className="w-3 h-3 rounded-sm" style={{ backgroundColor: item.color }}></div>
+            {item.label}
+          </div>
+        ))}
       </div>
-      <div className="flex-1">
-        <div className="font-bold text-white mb-1">{title}</div>
-        <div className="text-xs text-gray-400 mb-2">{effect}</div>
-        <div className="flex justify-between text-xs font-mono bg-gray-900/50 p-1.5 rounded">
-          <span className="text-red-400">Maliyet: {cost}</span>
-        </div>
-      </div>
-    </button>
+    </div>
   );
 }
+
 

@@ -1,39 +1,60 @@
-export type ThreatType = 'Suikast' | 'İç Karışıklık' | 'Savaş' | 'Terörizm' | 'Ekonomi' | 'İç Savaş';
-
-export type UnitType = 'Army' | 'Agent';
-
-export type MapMode = 'political' | 'threat' | 'military' | 'wars' | 'events';
-
-export interface Unit {
-  id: string;
-  type: UnitType;
-  countryId: string;
+export interface CountryData {
+  tr: string;
+  en: string;
+  code: string;
+  leader: string;
+  governmentType: string;
+  army: number;
+  economy: number;
+  technology: number;
+  agriculture: number;
+  population: number;
+  gdp: number;
+  capital: string;
+  language: string;
+  numericId?: number;
+  flagUrl?: string; // Hata mesajında flagUrl'in kullanıldığı görülüyor
 }
 
-export interface Threat {
-  id: string;
-  type: ThreatType;
-  severity: number;
+export type CountryMetadata = Record<string, CountryData>;
+
+// Restored types based on import errors
+export interface GameState {
+  turn: number;
+  maxTurns: number;
+  resources: any;
+  threats: any[];
+  units: any[];
+  logs: string[];
+  mapMode: string;
+  gameOver: boolean;
+  victory: boolean;
+  worldState: Record<string, any>;
+  gamePhase: string;
+}
+
+export interface Threat { 
+  id: string; 
+  type: string; 
+  severity: number; 
+  countryId: string; 
   turnsLeft: number;
-  countryId: string;
 }
-
-export interface Country {
-  id: string;
-  name: string;
+export interface ThreatType { name: string; }
+export interface Country { 
+  id: string; 
+  name: string; 
+  numericId?: number; 
 }
-
-export interface Resources {
-  budget: number;
-  intelligence: number;
-  military: number;
-  stability: number;
+export interface Unit { 
+  id: string; 
+  countryId: string; 
+  type: string; 
 }
-
-export interface CountryState {
-  id: string;
-  name: string;
-  ownerId: string;
+export interface CountryState { 
+  id: string; 
+  name: string; 
+  ownerId: string; 
   color: string;
   technology: number;
   agriculture: number;
@@ -46,22 +67,13 @@ export interface CountryState {
   spies: number;
   intelLevel: number;
   sanctions: boolean;
-  capital?: string;
-  language?: string;
+  isRebellion: boolean;
+  capital: string;
+  language: string;
+  population: number;
+  gdp: number;
 }
-
-export type GamePhase = 'main_menu' | 'country_selection' | 'playing' | 'paused' | 'design_doc';
-
-export interface GameState {
-  turn: number;
-  maxTurns: number;
-  resources: Resources;
-  threats: Threat[];
-  units: Unit[];
-  logs: string[];
-  mapMode: MapMode;
-  gameOver: boolean;
-  victory: boolean;
-  worldState: Record<string, CountryState>;
-  gamePhase: GamePhase;
-}
+export interface UserProfile { name: string; }
+export interface SaveGame { id: number; timestamp: string; gameState: GameState; playerCountryId: string; }
+export type MapMode = 'political' | 'military' | 'events' | 'wars' | 'threat';
+export type GamePhase = 'main_menu' | 'playing';
